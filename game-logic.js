@@ -995,10 +995,13 @@ function drawCardIfRoom(player){
   if(!card) return; // truly no cards left anywhere — shouldn't happen
   if(player.hand.length < maxHandSize(player)){
     player.hand.push(card);
-    log(player.name+' drew a card: '+card.name+'.');
+    // Deliberately not naming the card — hands are secret, and this log
+    // is broadcast to every player in the room. The drawer can already
+    // see exactly what they got in their own hand panel.
+    log(player.name+' drew a card.');
   } else {
     state.discardPile.push(card);
-    log(player.name+"'s hand is full (5) — drew "+card.name+' and it went straight to the discard pile.');
+    log(player.name+"'s hand is full (5) — drew a card and it went straight to the discard pile.");
   }
 }
 
@@ -2193,7 +2196,7 @@ function chooseLotteryDestination(pos){
     state.phase = resolvePendingGoChoicePhase('pre-roll'); // playing a card doesn't consume your roll
     return;
   }
-  player.position = pos;
+  advanceTo(player, pos, true);
   log(player.name+' used "'+pending.card.name+'" to warp to '+SPACES[pos].name+'.');
   state.preRollAction = true; // playing a card doesn't consume your roll
   resolveLanding(player);
@@ -2266,7 +2269,7 @@ function chooseGoAnywhereDestination(pos){
     state.phase = resolvePendingGoChoicePhase('pre-roll'); // playing a card doesn't consume your roll
     return;
   }
-  player.position = pos;
+  advanceTo(player, pos, true);
   log(player.name+' used "'+pending.card.name+'" to warp to '+SPACES[pos].name+'.');
   state.preRollAction = true; // playing a card doesn't consume your roll
   resolveLanding(player);
@@ -4337,7 +4340,7 @@ function debugGiveCard(playerId, idx){
   const card = CARD_DEFS[idx];
   if(!card) return;
   player.hand.push(card);
-  log('[DEBUG] '+player.name+' was given card "'+card.name+'".');
+  log('[DEBUG] '+player.name+' was given a card for testing.'); // not named — hands are secret, this is broadcast to everyone
 }
 
 // Debug-only: bypasses the normal no-duplicates pool AND the ruleset's

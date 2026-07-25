@@ -1324,14 +1324,32 @@ function renderBoard(){
 // (server.js decides who that is; state.afkPlayerId just says who).
 // Ticks live off of state.afkDeadline rather than waiting for the next
 // broadcast, via the setInterval below.
-function afkIndicatorHtml(){
-  if(!state || state.afkPlayerId !== myPlayerId || !state.afkDeadline) return '';
+function afkCountdownText(){
+  if(!state || state.afkPlayerId !== myPlayerId || !state.afkDeadline) return null;
   const remain = Math.max(0, Math.ceil((state.afkDeadline - Date.now())/1000));
   const m = Math.floor(remain/60), s = remain%60;
-  return '<div style="font-size:11px; color:var(--danger); margin-top:6px;">⏱ Forfeit in '+m+':'+String(s).padStart(2,'0')+' if you stay inactive</div>';
+  return m+':'+String(s).padStart(2,'0');
 }
+function afkIndicatorHtml(){
+  const text = afkCountdownText();
+  if(text == null) return '';
+  return '<div style="font-size:11px; color:var(--danger); margin-top:6px;">⏱ Forfeit in <span id="afkCountdownSpan">'+text+'</span> if you stay inactive</div>';
+}
+// Deliberately does NOT call renderTurnBox() — that rebuilds the entire
+// turn box from scratch, which would blow away any open <select> or
+// mid-click button list living inside it (this is exactly what broke
+// the GO/teleport destination pickers: the countdown ticking every
+// second raced with the player trying to use a dropdown, closing it or
+// resetting it back to the first option). Instead this only ever
+// touches the countdown's own span, in place, leaving everything else
+// in the turn box untouched. A no-op (safe) whenever that span isn't
+// currently in the DOM — not your turn, a different phase's UI is
+// showing, or a token's mid-walk.
 setInterval(()=>{
-  if(state && state.afkPlayerId === myPlayerId && !tokenAnimation) renderTurnBox();
+  const el = document.getElementById('afkCountdownSpan');
+  if(!el) return;
+  const text = afkCountdownText();
+  if(text != null) el.textContent = text;
 }, 1000);
 
 function renderTurnBox(){
@@ -1804,8 +1822,11 @@ function renderTurnBox(){
       if(hasAbility(player,'highroller')){
         html += '<button onclick="endTurn()">End Turn Instead</button>';
       }
+    } else if(state.pendingTrade){
+      html += '<div style="font-size:11.5px; color:var(--text-dim);">Waiting on your trade offer before ending your turn...</div>';
     } else {
       html += '<button onclick="endTurn()">End Turn</button>';
+      html += '<div style="font-size:10.5px; color:var(--text-dim); margin-top:4px;">Ending automatically...</div>';
     }
   }
   html += '</div>';
@@ -1987,15 +2008,35 @@ function renderTrade(){
   }
   const target = state.players[tradeTargetId];
 
+  // Small at-a-glance indicator of what a property actually is, since
+  // players know a property by its color group faster than its exact
+  // name: a color swatch for a normal color-group property, a train for
+  // a railroad (no color group of its own), a shrunk copy of its own
+  // property art for a utility (also colorless, but already has
+  // distinct art worth reusing small rather than inventing a new icon).
+  function propTypeIcon(pos){
+    const space = SPACES[pos];
+    if(space.type === 'railroad'){
+      return '<span style="display:inline-block; width:14px; text-align:center;" title="Railroad">🚂</span>';
+    }
+    if(space.type === 'utility'){
+      const imgPath = 'properties/' + space.num + '-' + propertySlug(space.name) + '.png';
+      return `<img src="${imgPath}" style="width:14px; height:19px; object-fit:cover; border-radius:2px; flex-shrink:0;" onerror="this.style.display='none'" title="Utility">`;
+    }
+    const color = space.color ? COLORS[space.color] : '#888';
+    return `<span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:${color}; flex-shrink:0;" title="${space.color}"></span>`;
+  }
+
   function propRow(player, prefix){
     const owned = [...player.owned].sort((a,b)=>a-b);
     if(owned.length===0) return '<div style="color:var(--text-dim); font-size:11px;">No properties.</div>';
     return owned.map(pos=>{
       const hasHouses = (player.houses[pos]||0) > 0;
       const id = prefix+'-'+pos;
-      return `<label style="display:block; font-size:11.5px; margin:2px 0; ${hasHouses?'color:var(--text-dim);':''}">
+      return `<label style="display:flex; align-items:center; gap:6px; font-size:11.5px; margin:2px 0; ${hasHouses?'color:var(--text-dim);':''}">
         <input type="checkbox" id="${id}" ${hasHouses?'disabled':''} onchange="renderTradeButtonState()">
-        ${SPACES[pos].name}${hasHouses?' (has houses — sell first)':''}
+        ${propTypeIcon(pos)}
+        <span>${SPACES[pos].name}${hasHouses?' (has houses — sell first)':''}</span>
       </label>`;
     }).join('');
   }
@@ -2064,8 +2105,27 @@ function renderPlayers(){
         }).join('')
       : '';
     const open = openPlayerDetail === p.id;
+    // Icons, not names — same property-art tiles the "My Properties"
+    // panel already uses (properties/<num>-<slug>.png, bordered in the
+    // space's color group), since players recognize a property by its
+    // color group on sight faster than by reading its exact name.
+    const propertyIconsHtml = p.owned.length===0 ? 'None' : '<div class="thumb-grid" style="margin-top:6px;">' + p.owned.slice().sort((a,b)=>a-b).map(pos=>{
+      const space = SPACES[pos];
+      const isMortgaged = !!p.mortgaged[pos];
+      const level = p.houses[pos] || 0;
+      const imgPath = 'properties/' + space.num + '-' + propertySlug(space.name) + '.png';
+      const badge = isMortgaged ? '🏦' : (level>0 ? (level<5?'🏠'.repeat(level):(Math.floor(level/5)>1?Math.floor(level/5)+'x ':'')+'HOTEL'+(level%5>0?'+'+(level%5):'')) : '');
+      const barColor = space.color ? COLORS[space.color] : (space.type==='railroad' ? '#888' : '#e2b13c');
+      return `<div class="thumb-tile" onclick="showBoardSpaceDetail(${pos})">
+        <img src="${imgPath}" style="border-color:${barColor}; ${isMortgaged?'opacity:0.55;':''}"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="thumb-fallback" style="display:none; border-color:${barColor}; ${isMortgaged?'opacity:0.55;':''}">${space.name}</div>
+        <div class="thumb-label">${space.name}</div>
+        ${badge ? '<div class="thumb-badge">'+badge+'</div>' : ''}
+      </div>`;
+    }).join('') + '</div>';
     const detail = open ? `<div style="padding:8px 4px 12px; font-size:12px; color:var(--text-dim);">
-      <div style="margin-bottom:6px;"><b>Properties (${props}):</b> ${props>0 ? p.owned.map(pos=>SPACES[pos].name).join(', ') : 'None'}</div>
+      <div style="margin-bottom:6px;"><b>Properties (${props}):</b> ${propertyIconsHtml}</div>
       <div style="margin-bottom:6px;"><b>Cards in hand:</b> ${p.hand.length}</div>
       <div><b>Abilit${abilities.length===1?'y':'ies'}:</b> ${abilities.length
         ? abilities.map(ability=>{
@@ -2512,6 +2572,37 @@ function render(){
     else if(openDetailTarget.type === 'abilitystatic') showAbilityDetailStatic(openDetailTarget.abilityId);
     else closeDetailModal();
   }
+  maybeScheduleAutoEndTurn();
+}
+
+// A plain 'turn-over' phase (nothing else pending) means clicking "End
+// Turn" is a foregone conclusion — auto-fire it after a short pause
+// instead of making the player click through it every turn. The button
+// stays visible so they can skip the wait if they want.
+//
+// Two situations under 'turn-over' are deliberately NOT auto-ended:
+// - state.doubleBonus (rolled doubles) — a real decision (roll again,
+//   or for High Roller, end turn instead), never auto-taken.
+// - state.pendingTrade — only the current player can have one pending
+//   here (proposeTrade is turn-gated), so it must be theirs; ending
+//   their turn out from under their own pending offer would be wrong.
+let autoEndTurnTimer = null;
+const AUTO_END_TURN_DELAY_MS = 900;
+function maybeScheduleAutoEndTurn(){
+  if(autoEndTurnTimer){ clearTimeout(autoEndTurnTimer); autoEndTurnTimer = null; }
+  if(!state || state.paused) return;
+  if(myPlayerId !== state.current) return;
+  if(state.phase !== 'turn-over') return;
+  if(state.doubleBonus) return;
+  if(state.pendingTrade) return;
+  autoEndTurnTimer = setTimeout(() => {
+    autoEndTurnTimer = null;
+    // Re-check — by the time this fires the player may have already
+    // clicked End Turn themselves, or something else may have changed.
+    if(state && !state.paused && myPlayerId === state.current && state.phase === 'turn-over' && !state.doubleBonus && !state.pendingTrade){
+      endTurn();
+    }
+  }, AUTO_END_TURN_DELAY_MS);
 }
 
 /* ================================================================
@@ -2591,6 +2682,14 @@ function openSettings(){
       <span>Volume</span>
       <input type="range" min="0" max="100" value="${Math.round(soundVolume*100)}"
              oninput="setSoundVolume(this.value)" onchange="playMoveSound()" style="width:140px;">
+    </div>`;
+  html += '<div class="detail-title" style="margin-top:18px;">🗣️ Voice lines</div>';
+  html += '<div class="detail-desc">Announces "it\'s your turn," and lets you know when you have a decision pending even outside your turn (e.g. someone proposed a trade to you). Separate from the move sound above — 0 turns it off. Saved to this browser only.</div>';
+  html += `
+    <div class="layout-setting-row">
+      <span>Volume</span>
+      <input type="range" min="0" max="100" value="${Math.round(voiceVolume*100)}"
+             oninput="setVoiceVolume(this.value)" onchange="playVoiceLine('your-turn')" style="width:140px;">
     </div>`;
   html += '<div class="detail-title" style="margin-top:18px;">Customize Layout</div>';
   html += '<div class="detail-desc">Choose where each panel shows up, or hide ones you don\'t need. Saved to this browser only.</div>';
@@ -2689,6 +2788,49 @@ function playMoveSound(){
 }
 
 // ============================================================
+// Voice line cues — "it's your turn" / "you have a decision pending"
+// (see socket.on('state', ...) for exactly when each fires). Separate
+// volume from the move sound on purpose — a player might want turn
+// announcements without footstep sounds, or vice versa. 0 volume is
+// "off", same convention as the move sound slider, no separate toggle.
+//
+// Files aren't recorded yet. Expected at public/sounds/voice/, named
+// <category>-<n>.mp3 where n runs from 1 up to VOICE_LINE_COUNTS[category]
+// (e.g. sounds/voice/your-turn-1.mp3 .. your-turn-5.mp3). One is picked
+// at random each time so it's not the exact same line every turn. Bump
+// the counts below if more lines are added later. Missing files fail
+// silently via the same onerror pattern every other optional asset in
+// this app already uses — nothing breaks with 0 files in place, or
+// fewer than the configured count.
+// ============================================================
+const VOICE_LINE_COUNTS = { 'your-turn': 5, 'input-needed': 5 };
+
+function loadVoiceVolume(){
+  try{
+    const v = parseFloat(localStorage.getItem('propertyTraderVoiceVolume'));
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5;
+  } catch(e){ return 0.5; }
+}
+function saveVoiceVolume(v){
+  try{ localStorage.setItem('propertyTraderVoiceVolume', String(v)); } catch(e){}
+}
+let voiceVolume = loadVoiceVolume();
+function setVoiceVolume(value){
+  voiceVolume = Math.min(1, Math.max(0, parseInt(value,10)/100));
+  saveVoiceVolume(voiceVolume);
+}
+
+function playVoiceLine(category){
+  if(voiceVolume <= 0) return;
+  const count = VOICE_LINE_COUNTS[category] || 1;
+  const n = 1 + Math.floor(Math.random() * count);
+  const audio = new Audio('sounds/voice/' + category + '-' + n + '.mp3');
+  audio.volume = voiceVolume;
+  audio.addEventListener('error', ()=>{}); // that line hasn't been recorded yet — stay silent
+  audio.play().catch(()=>{});
+}
+
+// ============================================================
 // Animated token movement — the server resolves an entire roll/landing
 // synchronously and broadcasts only the final state, same as hotseat's
 // local GL calls do; the difference is EVERY client gets that same
@@ -2698,7 +2840,23 @@ function playMoveSound(){
 // ============================================================
 let tokenAnimation = null; // {playerId, pos} | null — the one token currently mid-walk
 
+// Bumped once per incoming 'state' broadcast (see socket.on('state', ...)
+// below), regardless of whether that broadcast starts its own new
+// animation. animateTokenMove's tick() loop checks this every step and
+// silently stops the moment it's no longer current — without this, a
+// still-ticking setTimeout chain from an OLDER broadcast (e.g. a doubles
+// re-roll landing before the first roll finished walking) keeps running
+// on its own and can clobber tokenAnimation well after it should've
+// cleared, intermittently flashing the turn box back to the
+// non-interactive "Moving…" placeholder at random moments — which is
+// exactly what made clicks seem to need two tries and the whole turn
+// box feel stuck partway through a game (the more broadcasts pile up —
+// AFK ticks, other players' turns, etc. — the more likely two animations
+// overlap).
+let animationGeneration = 0;
+
 function animateTokenMove(playerId, fromPos, toPos, afterFn){
+  const myGeneration = animationGeneration;
   const forward = (toPos - fromPos + 40) % 40;
   const backward = 40 - forward;
   const dir = forward <= backward ? 1 : -1;
@@ -2708,6 +2866,7 @@ function animateTokenMove(playerId, fromPos, toPos, afterFn){
   let pos = fromPos;
   let i = 0;
   function tick(){
+    if(myGeneration !== animationGeneration) return; // superseded by a newer broadcast — stop touching shared state
     pos = (pos + dir + 40) % 40;
     i++;
     tokenAnimation = {playerId, pos};
@@ -2997,6 +3156,12 @@ socket.on('state', (s) => {
     // from the lobby overlay to the actual board.
     lobby = null;
     document.getElementById('lobbyScreen').style.display = 'none';
+    // A brand-new game's very first turn is a real "your turn just
+    // started" moment worth announcing — unlike a tab reconnecting
+    // mid-game (handled separately below, deliberately silent on the
+    // first broadcast it ever sees, so reloading mid-turn doesn't replay
+    // the cue every time).
+    if(s.current === myPlayerId) playVoiceLine('your-turn');
   }
 
   // Ruleset-gated debug panel — rebuild the layout once we actually know
@@ -3018,6 +3183,32 @@ socket.on('state', (s) => {
   // should walk there" from every other kind of update (money changes,
   // card-driven teleports, trades, etc., which still snap instantly).
   const oldState = state;
+
+  // Voice line cues — only on a genuine transition (never on the very
+  // first state this tab ever sees, e.g. a fresh join or a reconnect
+  // landing mid-turn; that would announce something that didn't just
+  // happen). "Your turn" fires when state.current changes to you.
+  // "Input needed" is scoped to the one out-of-turn case that actually
+  // exists today — someone proposed a trade to you — not every decision
+  // phase during your own turn, which would be constant and grating.
+  if(oldState){
+    if(s.current === myPlayerId && oldState.current !== myPlayerId){
+      playVoiceLine('your-turn');
+    }
+    const wasTargetedBefore = oldState.pendingTrade && oldState.pendingTrade.toId === myPlayerId;
+    const isTargetedNow = s.pendingTrade && s.pendingTrade.toId === myPlayerId;
+    if(isTargetedNow && !wasTargetedBefore){
+      playVoiceLine('input-needed');
+    }
+  }
+
+  // Every broadcast invalidates whatever animation generation came
+  // before it, whether or not THIS broadcast starts a new one — see the
+  // comment on animationGeneration above animateTokenMove for why this
+  // matters (a still-ticking old chain from a moment ago otherwise keeps
+  // running and can clobber tokenAnimation after it should've cleared).
+  animationGeneration++;
+
   let movedPlayerId = null;
   if(oldState && s.rollLandingPos != null){
     for(const np of s.players){
@@ -3037,6 +3228,10 @@ socket.on('state', (s) => {
       render(); // reveals the real resulting phase (buy prompt, etc.) once the walk finishes
     });
   } else {
+    // A previous animation's visual overlay (if any) is now stale too —
+    // the committed state below is already correct regardless, so don't
+    // leave a leftover "Moving…" placeholder showing.
+    tokenAnimation = null;
     state = s;
     render();
   }
