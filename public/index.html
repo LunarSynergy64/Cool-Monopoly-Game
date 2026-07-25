@@ -1,0 +1,3166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Property Trader — Prototype</title>
+<style>
+  /* ============================================================
+     BASIC LAYOUT
+     ============================================================ */
+  :root{
+    --bg:#1b1f24;
+    --panel:#242a31;
+    --panel-2:#2c333b;
+    --accent:#e2b13c;
+    --accent-2:#4c8bf5;
+    --text:#eef1f4;
+    --text-dim:#9aa4af;
+    --danger:#e2543c;
+    --good:#4cae6c;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:20px;
+    background:var(--bg); color:var(--text);
+    font-family:'Segoe UI', system-ui, sans-serif;
+  }
+  h1{font-size:22px; margin:0 0 4px;}
+  .subtitle{color:var(--text-dim); margin:0 0 20px; font-size:13px;}
+
+  .layout{
+    display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;
+  }
+
+  /* ============================================================
+     BOARD — an 11x11 CSS grid, corners + 9 spaces per side = 40
+     ============================================================ */
+  .board{
+    display:grid;
+    grid-template-columns: 84px repeat(9, 48px) 84px;
+    grid-template-rows: 84px repeat(9, 48px) 84px;
+    gap:2px;
+    background:#111417;
+    padding:2px;
+    border-radius:8px;
+  }
+  .space{
+    background:var(--panel);
+    border-radius:3px;
+    font-size:9px;
+    padding:3px;
+    position:relative;
+    overflow:hidden;
+    display:flex; flex-direction:column; justify-content:flex-end;
+    cursor:pointer;
+  }
+  .space:hover{ outline:1px solid var(--accent); outline-offset:-1px; }
+  .space .name{font-weight:600; line-height:1.1; position:relative; z-index:1;}
+  .space .price{color:var(--text-dim); font-size:8px; position:relative; z-index:1;}
+  /* Free Parking's pot amount — dynamic, so unlike .name/.price it's never
+     hidden by .has-art, and it's centered (not bottom-aligned) so it sits
+     in the middle of whatever art gets dropped in textures/20-freeparking.png,
+     which is expected to carry its own "FREE PARKING" text near the top/bottom. */
+  .free-parking-amount{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    z-index:1; font-weight:800; font-size:14px; color:var(--accent);
+    background:rgba(10,12,14,0.72); border-radius:4px; padding:2px 6px;
+    white-space:nowrap;
+  }
+  .space.corner{
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    font-size:10px; font-weight:700;
+  }
+  .color-bar{height:8px; width:100%; position:absolute; top:0; left:0; z-index:1;}
+  .space .art{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:0;}
+  /* Left/right column tiles are wide-and-short, but portrait art doesn't fit
+     that without cropping — size the image as if it were sitting in a
+     tall-narrow tile (matching its natural shape), center it, then rotate
+     90deg so its on-screen footprint becomes wide-and-short to match the
+     actual tile, without squishing or over-cropping the art itself. */
+  .space.side-left .art, .space.side-right .art{
+    inset:auto; top:50%; left:50%; width:48px; height:84px;
+  }
+  .space.side-left .art{ transform: translate(-50%,-50%) rotate(90deg); }
+  .space.side-right .art{ transform: translate(-50%,-50%) rotate(-90deg); }
+  .space.has-art .name, .space.has-art .price, .space.has-art .color-bar{
+    display:none;
+  }
+  .center{
+    grid-column:2 / 11; grid-row:2 / 11;
+    background:rgba(30,34,39,0.55) url('textures/board.png') center / cover no-repeat;
+    border-radius:6px;
+    position:relative;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    padding:10px;
+    gap:16px;
+  }
+  .deck-pile-row{ position:absolute; left:10px; bottom:10px; display:flex; gap:12px; }
+  .deck-pile{
+    position:relative;
+    width:80px; height:112px;
+    border:2px dashed rgba(255,255,255,0.3);
+    border-radius:6px;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden;
+    background:rgba(20,22,26,0.4);
+    text-align:center;
+  }
+  .deck-pile:hover{ border-color:rgba(255,255,255,0.6); }
+  .deck-pile img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:0; }
+  .deck-pile-label{ position:relative; z-index:1; background:rgba(10,12,14,0.6); border-radius:4px; padding:2px 4px; }
+  .deck-pile.deck-pile-landscape{ width:112px; height:80px; }
+  .chance-slot{ position:absolute; top:10px; left:10px; text-align:center; }
+  .chest-slot{ position:absolute; top:10px; right:10px; text-align:center; }
+  .token{
+    width:32px; height:32px;
+    position:absolute;
+    display:flex; align-items:flex-end; justify-content:center;
+  }
+  .token img{ width:100%; height:100%; object-fit:contain; display:block; }
+  .token.token-fallback{
+    width:16px; height:16px; border-radius:50%;
+    border:2px solid #111;
+    box-sizing:border-box;
+    align-self:flex-end;
+  }
+
+  /* ============================================================
+     SIDE PANEL
+     ============================================================ */
+  .sidebar-col{flex:1; min-width:280px; max-width:420px;}
+
+  /* ============================================================
+     LAYOUT CUSTOMIZATION SETTINGS
+     ============================================================ */
+  .layout-setting-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:8px 0; border-bottom:1px solid #333; font-size:12.5px;
+  }
+  .layout-setting-row:last-child{border-bottom:none;}
+  .layout-setting-row select{
+    padding:4px 6px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff; font-size:12px;
+  }
+  .card-box{
+    background:var(--panel); border-radius:8px; padding:14px; margin-bottom:14px;
+  }
+  .card-box h2{font-size:14px; margin:0 0 10px; color:var(--accent);}
+  .player-row{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:6px 0; border-bottom:1px solid #333; font-size:13px;
+  }
+  .player-row:last-child{border-bottom:none;}
+  .player-row.active{color:var(--accent); font-weight:600;}
+  .swatch{width:10px;height:10px;border-radius:50%; display:inline-block; margin-right:6px;}
+  button{
+    background:var(--accent-2); color:#fff; border:none; border-radius:5px;
+    padding:8px 14px; font-size:13px; cursor:pointer; font-weight:600;
+  }
+  button:hover{opacity:0.9;}
+  button:disabled{background:#444; cursor:not-allowed; opacity:0.6;}
+  button.secondary{background:#3a4149;}
+  button.buy{background:var(--good);}
+  button.skip{background:var(--danger);}
+  .btn-row{display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;}
+  .hand-card{
+    background:var(--panel-2); border:1px solid #3a4149; border-radius:6px;
+    padding:8px; margin-bottom:6px; font-size:12px;
+  }
+  .hand-card .title{font-weight:700; color:var(--accent);}
+  .hand-card .desc{color:var(--text-dim); font-size:11px; margin:3px 0 6px;}
+
+  /* ============================================================
+     THUMBNAILS (cards + properties) + GENERIC DETAIL MODAL
+     ============================================================ */
+  .thumb-grid{display:flex; flex-wrap:wrap; gap:10px;}
+  .thumb-tile{width:72px; cursor:pointer; text-align:center;}
+  .thumb-tile img{width:72px; height:100px; object-fit:cover; border-radius:5px; display:block; border:2px solid transparent;}
+  .thumb-fallback{
+    width:72px; height:100px; border-radius:5px; background:var(--panel-2);
+    display:flex; align-items:center; justify-content:center; font-size:9px;
+    color:var(--text-dim); text-align:center; padding:3px; box-sizing:border-box; border:2px solid transparent;
+  }
+  .thumb-label{font-size:9.5px; color:var(--text-dim); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .thumb-badge{font-size:8.5px; color:var(--accent); font-weight:700;}
+
+  .detail-modal-overlay{
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.85); display:none; align-items:center; justify-content:center;
+    z-index:1000; padding:20px; box-sizing:border-box;
+  }
+  .detail-modal-overlay.open{display:flex;}
+  .detail-modal-content{
+    background:var(--panel); border-radius:12px; padding:16px;
+    max-width:380px; width:100%; max-height:88vh; overflow-y:auto;
+    box-shadow:0 10px 40px rgba(0,0,0,0.6);
+  }
+  .detail-modal-content.wide{ max-width:min(900px, 92vw); }
+  .detail-modal-content img{width:100%; border-radius:8px; margin-bottom:10px; display:block;}
+  .detail-modal-content .detail-fallback{
+    width:100%; height:140px; border-radius:8px; background:var(--panel-2);
+    display:flex; align-items:center; justify-content:center; font-size:12px;
+    color:var(--text-dim); margin-bottom:10px;
+  }
+  .detail-modal-content .detail-title{font-size:17px; font-weight:700; color:var(--accent); margin-bottom:6px;}
+  .detail-modal-content .detail-desc{font-size:12.5px; color:var(--text-dim); margin-bottom:10px; line-height:1.4;}
+  .log{
+    height:150px; overflow-y:auto; font-size:11.5px; color:var(--text-dim);
+    display:flex; flex-direction:column-reverse;
+  }
+  .log div{padding:2px 0; border-bottom:1px solid #2c333b;}
+  .dice{font-size:26px; text-align:center; margin:6px 0;}
+
+  .properties-section{
+    max-width:1400px; margin:20px auto 0; background:var(--panel); border-radius:8px; padding:14px;
+  }
+
+  /* ============================================================
+     COLLAPSIBLE CARD SECTIONS
+     ============================================================ */
+  .card-header{
+    display:flex; justify-content:space-between; align-items:center;
+    cursor:pointer; user-select:none; margin-bottom:10px;
+  }
+  .card-header h2{margin:0;}
+  .collapse-arrow{color:var(--text-dim); font-size:11px; transition:transform 0.15s;}
+  .collapsible.collapsed{display:none;}
+
+  /* ============================================================
+     PROPERTY GROUPS
+     ============================================================ */
+  .group-label{
+    font-size:10.5px; color:var(--text-dim); text-transform:uppercase;
+    letter-spacing:0.6px; margin:10px 0 4px;
+  }
+  .group-label:first-child{margin-top:0;}
+  .prop-card{
+    background:var(--panel-2); border-radius:6px; padding:8px;
+    margin-bottom:6px; font-size:12px; border-left:4px solid #555;
+  }
+  .prop-card .title{font-weight:700; color:var(--accent);}
+  .prop-card .desc{color:var(--text-dim); font-size:11px; margin:3px 0 6px;}
+
+  /* Defense-in-depth only — server.js already rejects every non-pause
+     action while a room is paused. This just keeps the UI from looking
+     usable while everything would bounce. .pause-exempt (the Settings
+     button, the pause/unpause controls themselves) stays interactive. */
+  body.game-paused button:not(.pause-exempt),
+  body.game-paused input:not(.pause-exempt) {
+    pointer-events: none;
+    opacity: 0.4;
+  }
+</style>
+</head>
+<body>
+
+<div id="joinScreen" style="position:fixed; inset:0; background:#1b1f24; display:flex; align-items:center; justify-content:center; z-index:2000;">
+  <div style="background:#242a31; border-radius:10px; padding:28px; width:320px; max-width:90vw;">
+    <h1 style="font-size:20px; margin:0 0 4px;">Property Trader</h1>
+    <p style="color:#9aa4af; font-size:12.5px; margin:0 0 18px;">Join a friend's game, or leave the room code blank to start a new one.</p>
+    <label style="font-size:12px; color:#9aa4af;">Your name</label>
+    <input id="playerNameInput" type="text" placeholder="e.g. Sam" style="width:100%; padding:8px; margin:4px 0 12px; border-radius:5px; border:1px solid #444; background:#1b1f24; color:#fff; box-sizing:border-box;">
+    <label style="font-size:12px; color:#9aa4af;">Room code (leave blank to create a new game)</label>
+    <input id="roomCodeInput" type="text" placeholder="e.g. ABCD" style="width:100%; padding:8px; margin:4px 0 12px; border-radius:5px; border:1px solid #444; background:#1b1f24; color:#fff; box-sizing:border-box; text-transform:uppercase;">
+    <label style="font-size:12px; color:#9aa4af;">Players in this game (only matters when creating)</label>
+    <select id="numPlayersSelect" style="width:100%; padding:8px; margin:4px 0 16px; border-radius:5px; border:1px solid #444; background:#1b1f24; color:#fff; box-sizing:border-box;">
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+      <option value="7">7</option>
+      <option value="8">8</option>
+    </select>
+    <button onclick="toggleRulesetPanel()" id="rulesetToggleBtn" style="width:100%; padding:8px; margin-bottom:12px; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:5px; font-size:12.5px; cursor:pointer;">⚙️ Customize Rules (only matters when creating) ▾</button>
+    <div id="rulesetPanel" style="display:none; margin-bottom:14px; max-height:340px; overflow-y:auto; border:1px solid #333; border-radius:6px; padding:10px; background:#1b1f24;">
+      <div style="font-size:12px; font-weight:700; color:#e2b13c; margin-bottom:6px;">Abilities</div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:4px;">
+        <input type="radio" name="abilityMode" value="random" checked onchange="onAbilityModeChange()"> Random ability on passing GO
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:6px;">
+        <input type="radio" name="abilityMode" value="choice" onchange="onAbilityModeChange()"> Choose from a few on passing GO
+      </label>
+      <div id="choiceCountRow" style="display:none; margin:4px 0 8px 20px; font-size:12px;">
+        Show
+        <select id="choiceCountSelect" style="padding:3px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+        </select>
+        options to choose from
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:6px;">
+        <input type="checkbox" id="allowRepeatAbilitiesCb"> Allow two players to have the same ability
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:2px;">
+        Abilities per player:
+        <select id="maxAbilitiesSelect" style="padding:3px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+        </select>
+      </label>
+      <div style="font-size:10.5px; color:#777; margin:2px 0 10px;">More than 1 will need repeats allowed once you run out of players' worth of unique abilities.</div>
+
+      <div style="font-size:12px; font-weight:700; color:#e2b13c; margin-bottom:6px; border-top:1px solid #333; padding-top:8px;">Debug tools</div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:2px;">
+        <input type="checkbox" id="enableDebugToolsCb"> 🐞 Enable debug tools (free money/properties/cards/abilities — off by default)
+      </label>
+      <div style="font-size:10.5px; color:#777; margin:2px 0 10px;">Only turn this on for testing — everyone in the game gets access to it, not just you.</div>
+
+      <div style="font-size:12px; font-weight:700; color:#e2b13c; margin-bottom:6px; border-top:1px solid #333; padding-top:8px;">Which abilities are in play</div>
+      <div id="abilityCheckboxes" style="margin-bottom:10px;"></div>
+
+      <div style="font-size:12px; font-weight:700; color:#e2b13c; margin-bottom:6px; border-top:1px solid #333; padding-top:8px;">Which cards are in play</div>
+      <div style="margin-bottom:6px;">
+        <button type="button" onclick="setAllCardCheckboxes(true)" style="font-size:11px; padding:3px 8px; margin-right:6px; cursor:pointer;">All</button>
+        <button type="button" onclick="setAllCardCheckboxes(false)" style="font-size:11px; padding:3px 8px; cursor:pointer;">None</button>
+      </div>
+      <div id="cardCheckboxes"></div>
+    </div>
+    <button onclick="joinGame()" style="width:100%; padding:10px; background:#4c8bf5; color:#fff; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:pointer;">Join / Create Game</button>
+    <div id="joinError" style="color:#e2543c; font-size:12px; margin-top:10px;"></div>
+  </div>
+</div>
+
+<!-- Pre-game lobby — shown after joining a room, before the host starts
+     the game. Players join independently at different times online (no
+     shared-screen pass-the-device moment like hotseat's setup flow), so
+     piece-picking + a ready check happen here instead. Hidden by default;
+     shown by the 'lobbyState' socket handler, hidden again once real game
+     'state' events start arriving (see socket.on('state', ...) below). -->
+<div id="lobbyScreen" style="display:none; position:fixed; inset:0; background:#1b1f24; z-index:1900; overflow-y:auto;">
+  <div style="max-width:520px; margin:30px auto; background:#242a31; border-radius:10px; padding:24px;">
+    <h1 style="font-size:20px; margin:0 0 4px;">Waiting for players…</h1>
+    <p style="color:#9aa4af; font-size:12.5px; margin:0 0 16px;" id="lobbyRoomCodeLine"></p>
+    <div id="lobbyPlayerList" style="margin-bottom:18px;"></div>
+    <div id="lobbyPieceSection" style="margin-bottom:16px;"></div>
+    <div id="lobbyActions"></div>
+    <button onclick="leaveLobby()" style="width:100%; padding:8px; margin-top:10px; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; font-size:12.5px; cursor:pointer;">← Leave / choose a different room</button>
+  </div>
+</div>
+
+<!-- Shown instead of a flat rejection when a room code belongs to a game
+     that's already live — offers to sub into a seat nobody's currently
+     connected to (same cards/money/position, no rename/re-pick), or join
+     as a brand-new player starting fresh if the roster still has room.
+     Driven by the 'liveRoomJoinOptions' socket event. -->
+<div id="liveJoinScreen" style="display:none; position:fixed; inset:0; background:#1b1f24; z-index:1950; overflow-y:auto;">
+  <div style="max-width:480px; margin:30px auto; background:#242a31; border-radius:10px; padding:24px;">
+    <h1 style="font-size:19px; margin:0 0 4px;">This game is already in progress</h1>
+    <p style="color:#9aa4af; font-size:12.5px; margin:0 0 16px;">You can take over a seat nobody's connected to right now, or join as a new player if there's room.</p>
+    <div id="liveJoinSeatList" style="margin-bottom:16px;"></div>
+    <div id="liveJoinNewSection"></div>
+    <div id="liveJoinError" style="color:#e2543c; font-size:12px; margin-top:10px;"></div>
+    <button onclick="cancelLiveJoin()" style="width:100%; padding:8px; margin-top:10px; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; font-size:12.5px; cursor:pointer;">← Back</button>
+  </div>
+</div>
+
+<div id="roomBanner" style="display:none; position:fixed; top:8px; left:12px; background:#242a31; padding:6px 12px; border-radius:6px; font-size:12px; color:#9aa4af; z-index:1500;"></div>
+
+<h1>Property Trader</h1>
+<p class="subtitle" id="gameSubtitle">Base rules, plus your custom cards. Share your room code with friends to play together.</p>
+<button onclick="openSettings()" style="position:fixed; top:14px; right:14px; z-index:900; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; padding:6px 10px; font-size:12px; cursor:pointer;">⚙️ Settings</button>
+<button id="pauseToggleBtn" class="pause-exempt" onclick="requestPauseGame()" style="display:none; position:fixed; top:14px; right:96px; z-index:900; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; padding:6px 10px; font-size:12px; cursor:pointer;">⏸️ Pause</button>
+
+<div id="pauseBanner" class="pause-exempt" style="display:none; position:fixed; top:0; left:0; right:0; z-index:2000; background:#3a2e14; border-bottom:2px solid #c9932f; color:#f0d9a8; padding:10px 16px; text-align:center; font-size:13px;"></div>
+
+<div class="layout">
+  <div class="board" id="board">
+    <div class="center" id="center"></div>
+  </div>
+
+  <div class="sidebar-col" id="sidebarLeft"></div>
+  <div class="sidebar-col" id="sidebarRight"></div>
+</div>
+
+<div class="properties-section">
+  <div class="card-header" onclick="toggleCollapse('propertyList')" style="margin-bottom:10px;">
+    <h2>My Properties</h2>
+    <span class="collapse-arrow" id="arrow-propertyList">▾</span>
+  </div>
+  <div class="collapsible" id="propertyList"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const COLORS = {
+  brown:'#8b5a2b', lightblue:'#aae0fa', pink:'#d63384',
+  orange:'#fd7e14', red:'#dc3545', yellow:'#ffc107',
+  green:'#28a745', darkblue:'#1a3fa0'
+};
+
+const SPACES = [
+  {name:'GO', type:'go'},
+  {name:'Mediterranean Ave', num:1, type:'property', price:60, color:'brown', houseCost:50, rent:[2,10,30,90,160,250]},
+  {name:'Community Chest', type:'chest'},
+  {name:'Baltic Ave', num:2, type:'property', price:60, color:'brown', houseCost:50, rent:[4,20,60,180,320,450]},
+  {name:'Income Tax', type:'tax', amount:200},
+  {name:'Reading Railroad', num:3, type:'railroad', price:200, houseCost:100},
+  {name:'Oriental Ave', num:4, type:'property', price:100, color:'lightblue', houseCost:50, rent:[6,30,90,270,400,550]},
+  {name:'Chance', type:'chance'},
+  {name:'Vermont Ave', num:5, type:'property', price:100, color:'lightblue', houseCost:50, rent:[6,30,90,270,400,550]},
+  {name:'Connecticut Ave', num:6, type:'property', price:120, color:'lightblue', houseCost:50, rent:[8,40,100,300,450,600]},
+  {name:'Jail', type:'jail'},
+  {name:'St. Charles Pl', num:7, type:'property', price:140, color:'pink', houseCost:100, rent:[10,50,150,450,625,750]},
+  {name:'Electric Company', num:8, type:'utility', price:150, houseCost:50},
+  {name:'States Ave', num:9, type:'property', price:140, color:'pink', houseCost:100, rent:[10,50,150,450,625,750]},
+  {name:'Virginia Ave', num:10, type:'property', price:160, color:'pink', houseCost:100, rent:[12,60,180,500,700,900]},
+  {name:'Pennsylvania RR', num:11, type:'railroad', price:200, houseCost:100},
+  {name:'St. James Pl', num:12, type:'property', price:180, color:'orange', houseCost:100, rent:[14,70,200,550,750,950]},
+  {name:'Community Chest', type:'chest'},
+  {name:'Tennessee Ave', num:13, type:'property', price:180, color:'orange', houseCost:100, rent:[14,70,200,550,750,950]},
+  {name:'New York Ave', num:14, type:'property', price:200, color:'orange', houseCost:100, rent:[16,80,220,600,800,1000]},
+  {name:'Free Parking', type:'free'},
+  {name:'Kentucky Ave', num:15, type:'property', price:220, color:'red', houseCost:150, rent:[18,90,250,700,875,1050]},
+  {name:'Chance', type:'chance'},
+  {name:'Indiana Ave', num:16, type:'property', price:220, color:'red', houseCost:150, rent:[18,90,250,700,875,1050]},
+  {name:'Illinois Ave', num:17, type:'property', price:240, color:'red', houseCost:150, rent:[20,100,300,750,925,1100]},
+  {name:'B&O Railroad', num:18, type:'railroad', price:200, houseCost:100},
+  {name:'Atlantic Ave', num:19, type:'property', price:260, color:'yellow', houseCost:150, rent:[22,110,330,800,975,1150]},
+  {name:'Ventnor Ave', num:20, type:'property', price:260, color:'yellow', houseCost:150, rent:[22,110,330,800,975,1150]},
+  {name:'Water Works', num:21, type:'utility', price:150, houseCost:50},
+  {name:'Marvin Gardens', num:22, type:'property', price:280, color:'yellow', houseCost:150, rent:[24,120,360,850,1025,1200]},
+  {name:'Go To Jail', type:'gotojail'},
+  {name:'Pacific Ave', num:23, type:'property', price:300, color:'green', houseCost:200, rent:[26,130,390,900,1100,1275]},
+  {name:'North Carolina Ave', num:24, type:'property', price:300, color:'green', houseCost:200, rent:[26,130,390,900,1100,1275]},
+  {name:'Community Chest', type:'chest'},
+  {name:'Pennsylvania Ave', num:25, type:'property', price:320, color:'green', houseCost:200, rent:[28,150,450,1000,1200,1400]},
+  {name:'Short Line', num:26, type:'railroad', price:200, houseCost:100},
+  {name:'Chance', type:'chance'},
+  {name:'Park Place', num:27, type:'property', price:350, color:'darkblue', houseCost:200, rent:[35,175,500,1100,1300,1500]},
+  {name:'Luxury Tax', type:'tax', amount:100},
+  {name:'Boardwalk', num:28, type:'property', price:400, color:'darkblue', houseCost:200, rent:[50,200,600,1400,1700,2000]},
+];
+
+const RAILROAD_RENT = [25,50,100,200]; // rent for owning 1,2,3,4 railroads
+
+function rentFor(space, houses){
+  const tier = houses || 0;
+  return space.rent[tier];
+}
+
+function colorGroupPositions(color){
+  const positions = [];
+  SPACES.forEach((s,i)=>{ if(s.type==='property' && s.color===color) positions.push(i); });
+  return positions;
+}
+
+function ownsFullColorGroup(player, position){
+  const space = SPACES[position];
+  const group = colorGroupPositions(space.color);
+  return group.every(pos => player.owned.includes(pos));
+}
+
+function groupMinLevel(player, color){
+  const group = colorGroupPositions(color);
+  return Math.min(...group.map(pos => player.houses[pos] || 0));
+}
+
+// Players can hold more than one ability at once under a custom ruleset
+// (maxAbilitiesPerPlayer > 1) — player.abilities is an array, mirroring
+// game-logic.js's own hasAbility() exactly, for the same display/lock-check
+// purposes as the other client-only mirrors below (server stays authoritative).
+function hasAbility(player, id){
+  return !!(player && player.abilities && player.abilities.includes(id));
+}
+
+// Client-only mirrors of game-logic.js's Builder-ability helpers, for
+// display/lock-check purposes only — the server is authoritative.
+function maxBuildLevelFor(player){
+  return (player && hasAbility(player,'builder')) ? 10 : 5;
+}
+
+function houseLevelLabel(level){
+  if(!level || level <= 0) return 'No houses';
+  if(level < 5) return level+' house'+(level>1?'s':'');
+  const hotels = Math.floor(level/5);
+  const extra = level % 5;
+  let label = hotels+' Hotel'+(hotels>1?'s':'');
+  if(extra > 0) label += ' + '+extra+' house'+(extra>1?'s':'');
+  return label;
+}
+
+function typePositions(type){
+  const positions = []; SPACES.forEach((s,i)=>{ if(s.type===type) positions.push(i); }); return positions;
+}
+
+function ownsAllOfType(player, type){
+  return typePositions(type).every(pos => player.owned.includes(pos));
+}
+
+function groupMinLevelForType(player, type){
+  return Math.min(...typePositions(type).map(pos => player.houses[pos] || 0));
+}
+
+function nonPropertyHouseMultiplier(houses){
+  const level = houses || 0;
+  if(level === 0) return 1;
+  if(level === 1) return 1.5;
+  return level;
+}
+
+function maxHandSize(player){
+  return (player && hasAbility(player,'firstrateduelist')) ? 10 : 5;
+}
+
+function maxCardsPerTurn(player){
+  return (player && hasAbility(player,'firstrateduelist')) ? 2 : 1;
+}
+
+function playerHasMonopoly(player){
+  const colors = new Set(SPACES.filter(s=>s.type==='property').map(s=>s.color));
+  for(const color of colors){
+    const group = colorGroupPositions(color);
+    if(group.every(pos => player.owned.includes(pos))) return true;
+  }
+  return false;
+}
+
+// Every {player, pos} pair, across all players except excludeId, where a
+// house or hotel is currently built. Used to lock Demolisher when there's
+// nothing for it to demolish.
+function findHousedPropertiesOf(players, excludeId){
+  const results = [];
+  players.forEach(p=>{
+    if(p.id === excludeId || p.bankrupt) return;
+    p.owned.forEach(pos=>{
+      if((p.houses[pos]||0) > 0) results.push({player:p, pos});
+    });
+  });
+  return results;
+}
+
+const CARD_DEFS = [
+  {
+    id:'theprojects', num:1, name:'The Projects', type:'teleport', image: 'cards/1-theprojects.png',
+    desc:'Warp to Baltic or Mediterranean. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[1,3]
+  },
+  {
+    id:'blues', num:2, name:'Blues', type:'teleport', image: 'cards/2-blues.png',
+    desc:'Warp to Oriental, Vermont, or Connecticut. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[6,8,9]
+  },
+  {
+    id:'pinks', num:3, name:'Pinks', type:'teleport', image: 'cards/3-pinks.png',
+    desc:'Warp to St. Charles, States, or Virginia. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[11,13,14]
+  },
+  {
+    id:'oranges', num:4, name:'Oranges', type:'teleport', image: 'cards/4-oranges.png',
+    desc:'Warp to St. James, Tennessee, or New York. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[16,18,19]
+  },
+  {
+    id:'greens', num:5, name:'Greens', type:'teleport', image: 'cards/5-greens.png',
+    desc:'Warp to Pacific, North Carolina, or Pennsylvania. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[31,32,34]
+  },
+  {
+    id:'yellows', num:6, name:'Yellows', type:'teleport', image: 'cards/6-yellows.png',
+    desc:'Warp to Atlantic, Ventnor, or Marvin Gardens. Unowned: half price. Owned: pay half rent. Requires having reached Free Parking.',
+    destinations:[26,27,29]
+  },
+  {
+    id:'darkblues', num:7, name:'Dark Blues', type:'teleport', image: 'cards/7-darkblues.png',
+    desc:'Warp to Boardwalk or Park Place. Unowned: half price. Owned: pay half rent. Mortgaged: steal it for double board price. Requires having reached Free Parking.',
+    destinations:[37,39]
+  },
+  {
+    id:'railroads', num:8, name:'Railroads', type:'teleport', image: 'cards/8-railroads.png',
+    desc:'Warp to any Railroad (Reading, Pennsylvania, B&O, or Short Line). Unowned: half price. Owned: pay half rent. Mortgaged: steal it for double board price. Requires having reached Free Parking.',
+    destinations:[5,15,25,35]
+  },
+  {
+    id:'taxation', num:9, name:'Taxation', type:'taxation', image: 'cards/9-taxation.png',
+    desc:'Give to a player (or yourself) — they must go to either Income Tax or Luxury Tax. Requires having reached Free Parking.',
+    destinations:[4,38]
+  },
+  {
+    id:'speedflips', num:10, name:'Speed Flips', type:'coinbonus', image: 'cards/10-speedflips.png',
+    desc:'Flip 3 coins. For each heads you may add +5 to your roll — you choose how many to actually use.'
+  },
+  {
+    id:'gamblerscurse', num:11, name:"Gambler's Curse", type:'coincurse', image: 'cards/11-gamblerscurse.png',
+    desc:'Flip 3 coins. 3 heads: win $1000. 3 tails: lose $500, split among the other players however you choose.'
+  },
+  {
+    id:'smallmoves', num:12, name:'Small Moves', type:'smallmoves', image: 'cards/12-smallmoves.png',
+    desc:'Flip a coin. Heads: you may move 1 space forward after your roll. Tails: 1 space backward. Using it is optional.'
+  },
+  {
+    id:'roll', num:13, name:'Roll', type:'rollboost', image: 'cards/13-roll.png', value:3,
+    desc:'+3 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'rollplus', num:14, name:'Roll+', type:'rollboost', image: 'cards/14-rollplus.png', value:5,
+    desc:'+5 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'rollplusplus', num:15, name:'Roll++', type:'rollboost', image: 'cards/15-rollplusplus.png', value:7,
+    desc:'+7 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'rollplusplusplus', num:16, name:'Roll+++', type:'rollboost', image: 'cards/16-rollplusplusplus.png', value:10,
+    desc:'+10 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'pickup', num:17, name:'Pickup', type:'pickup', image: 'cards/17-pickup.png',
+    desc:'On your next roll, get a card for every Chance/Community Chest space you pass over.'
+  },
+  {
+    id:'coinflipsteal', num:18, name:'Coin Flip Steal', type:'coinsteal', image: 'cards/18-coinflipsteal.png',
+    desc:'Flip a coin for each unmortgaged property you own. For every heads, collect $50 from each other player (players in jail are exempt).'
+  },
+  {
+    id:'propertytheft', num:19, name:'Property Theft', type:'propertytheft', image: 'cards/19-propertytheft.png',
+    desc:"If you're one property short of a monopoly, steal that property from the bank or another player — you must give back one of your own properties in return."
+  },
+  {
+    id:'custom', num:20, name:'Custom', type:'custom', image: 'cards/20-custom.png',
+    desc:'Flip 2 coins. Each heads lets you choose that die\'s value (1-6) on your next roll; unchosen dice roll normally.'
+  },
+  {
+    id:'slow', num:21, name:'Slow', type:'rollboost', image: 'cards/21-slow.png', value:-5,
+    desc:'-5 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'slowplus', num:22, name:'Slow+', type:'rollboost', image: 'cards/22-slowplus.png', value:-7,
+    desc:'-7 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'slowplusplus', num:23, name:'Slow++', type:'rollboost', image: 'cards/23-slowplusplus.png', value:-10,
+    desc:'-10 to your next roll. Give it to yourself or another player.'
+  },
+  {
+    id:'slowflips', num:24, name:'Slow Flips', type:'slowflips', image: 'cards/24-slowflips.png',
+    desc:'Flip 4 coins. The target loses 5 to their next roll for every tails. Give it to yourself or another player.'
+  },
+  {
+    id:'switchrandom', num:25, name:'Switch Random', type:'switchrandom', image: 'cards/25-switchrandom.png',
+    desc:'Randomly swap yourself with another player. Swapping places does not mean you land on the space you swap to.'
+  },
+  {
+    id:'skip', num:26, name:'Skip', type:'skip', image: 'cards/26-skip.png',
+    desc:"Give to a player (or yourself) — they skip the roll on their next turn, but can still use cards, trade, and buy houses that turn."
+  },
+  {
+    id:'switch', num:27, name:'Switch', type:'switch', image: 'cards/27-switch.png',
+    desc:'Swap yourself with one other player of your choice. Swapping places does not mean you land on the space you swap to.'
+  },
+  {
+    id:'switchany', num:28, name:'Switch Any', type:'switchany', image: 'cards/28-switchany.png',
+    desc:'Choose 2 players (can include yourself) to swap places with each other. Swapping places does not mean you land on the space swapped to.'
+  },
+  {
+    id:'pickupchance', num:29, name:'Pickup Chance', type:'pickupchance', image: 'cards/29-pickupchance.png',
+    desc:'Draw 3 Chance cards, one at a time.'
+  },
+  {
+    id:'pickupboth', num:30, name:'Pickup Both', type:'pickupboth', image: 'cards/30-pickupboth.png',
+    desc:'Draw 2 Chance cards, then 2 Community Chest cards, one at a time.'
+  },
+  {
+    id:'drawcards', num:31, name:'Draw Cards', type:'drawcards', image: 'cards/31-drawcards.png',
+    desc:'Draw 2 cards.'
+  },
+  {
+    id:'pickupcommunitychest', num:32, name:'Pickup Community Chest', type:'pickupcommunitychest', image: 'cards/32-pickupcommunitychest.png',
+    desc:'Draw 3 Community Chest cards, one at a time.'
+  },
+  {
+    id:'flipdraw', num:33, name:'Flip Draw', type:'flipdraw', image: 'cards/33-flipdraw.png',
+    desc:'Flip 3 coins and draw a card for each heads flipped.'
+  },
+  {
+    id:'buyer', num:34, name:'Buyer', type:'buyer', image: 'cards/34-buyer.png',
+    desc:'Teleport to the next unowned property. Usable even before reaching Free Parking.'
+  },
+  {
+    id:'lottery', num:35, name:'Lottery', type:'lottery', image: 'cards/35-lottery.png',
+    desc:'Flip 2 coins. 2 heads: go anywhere (choosing GO instead gives you $400). 1 heads: go anywhere except GO or Free Parking. 0 heads: send one other player to Free Parking. Requires having reached Free Parking.',
+  },
+  {
+    id:'demolisher', num:36, name:'Demolisher', type:'demolisher', image: 'cards/36-demolisher.png',
+    desc:"Flip 3 coins. For each heads, knock one house off a random opposing property (a Hotel drops to 4 houses and counts as one)."
+  },
+  {
+    id:'freelo', num:37, name:'Freelo', type:'freelo', image: 'cards/37-freelo.png',
+    desc:'The next property you land on is free to buy if unowned, or rent-free if owned.'
+  },
+  {
+    id:'builder', num:38, name:'Builder', type:'builder', image: 'cards/38-builder.png',
+    desc:'Flip 4 coins. For each heads, build a house on a property in a full color set you own (even-building still applies; upgrading to a Hotel counts as one house). Unusable until you own at least one monopoly.'
+  },
+  {
+    id:'wrongway', num:39, name:'Wrong Way', type:'wrongway', image: 'cards/39-wrongway.png',
+    desc:'Give to yourself or another player — they move backwards on their next roll. Passing a property backwards works just like passing it forwards, except passing GO backwards gives no money or card (landing exactly on GO still does).'
+  },
+  {
+    id:'diced', num:40, name:'Diced', type:'diced', image: 'cards/40-diced.png',
+    desc:'Choose to roll 1 die or 3 dice on your next roll.'
+  },
+  {
+    id:'curseddie', num:41, name:'Cursed Die', type:'curseddie', image: 'cards/41-curseddie.png',
+    desc:'Give to yourself or another player — they can only roll one die on their next turn.'
+  },
+  {
+    id:'goanywhere', num:42, name:'Go Anywhere', type:'goanywhere', image: 'cards/42-goanywhere.png',
+    desc:'Go anywhere on the board. Choosing GO instead gives you $400 (and still draws your card for landing on GO). Requires having reached Free Parking.'
+  },
+  {
+    id:'driveby', num:43, name:'Drive By', type:'driveby', image: 'cards/43-driveby.png', value:100,
+    desc:'Steal $100 from every player you pass this turn (starting or ending on their space counts as passing them). Players in jail are exempt. Only in effect for this roll — a doubles bonus roll does not count.'
+  },
+  {
+    id:'drivebyplus', num:44, name:'Drive By+', type:'driveby', image: 'cards/44-drivebyplus.png', value:200,
+    desc:'Steal $200 from every player you pass this turn (starting or ending on their space counts as passing them). Players in jail are exempt. Only in effect for this roll — a doubles bonus roll does not count.'
+  },
+  {
+    id:'drivebyplusplus', num:45, name:'Drive By++', type:'driveby', image: 'cards/45-drivebyplusplus.png', value:300,
+    desc:'Steal $300 from every player you pass this turn (starting or ending on their space counts as passing them). Players in jail are exempt. Only in effect for this roll — a doubles bonus roll does not count.'
+  },
+  {
+    id:'passby', num:46, name:'Pass By', type:'passby', image: 'cards/46-passby.png', pct:0.4,
+    desc:'Choose a player and a property. The next time that player passes that property, they pay 40% of the rent they would have owed if they\'d landed on it. Teleport cards never count as passing.'
+  },
+  {
+    id:'passbyplus', num:47, name:'Pass By+', type:'passby', image: 'cards/47-passbyplus.png', pct:0.5,
+    desc:'Choose a player and a property. The next time that player passes that property, they pay 50% of the rent they would have owed if they\'d landed on it. Teleport cards never count as passing.'
+  },
+  {
+    id:'passbyplusplus', num:48, name:'Pass By++', type:'passby', image: 'cards/48-passbyplusplus.png', pct:0.6,
+    desc:'Choose a player and a property. The next time that player passes that property, they pay 60% of the rent they would have owed if they\'d landed on it. Teleport cards never count as passing.'
+  },
+  {
+    id:'jumpinplace', num:49, name:'Jump in Place', type:'jumpinplace', image: 'cards/49-jumpinplace.png',
+    desc:'Land on your current space again, as if you jumped in place — re-triggers whatever that space does (Free Parking, Chance, rent, etc.).'
+  },
+  {
+    id:'cardswitch', num:50, name:'Card Switch', type:'cardswitch', image: 'cards/50-cardswitch.png',
+    desc:"Choose a player, look through their hand, and swap one of their cards for one of your own."
+  },
+  {
+    id:'gamblingluck', num:51, name:'Gambling Luck', type:'gamblingluck', image: 'cards/51-gamblingluck.png',
+    desc:'Playable only right after rolling two 1s, before your next roll — cash in for $1000.'
+  },
+  {
+    id:'knockback', num:52, name:'Knockback', type:'knockback', image: 'cards/52-knockback.png',
+    desc:'Every player you pass this turn gets knocked back 1 space, landing on it for real. Starting or ending on their space counts as passing them.'
+  },
+  {
+    id:'knockforward', num:53, name:'Knock Forward', type:'knockforward', image: 'cards/53-knockforward.png',
+    desc:'Every player you pass this turn gets pushed forward 1 space, landing on it for real. Starting or ending on their space counts as passing them.'
+  },
+  {
+    id:'jailed', num:54, name:'Jailed', type:'jailed', image: 'cards/54-jailed.png',
+    desc:'Send a random player to Jail — including possibly yourself.'
+  },
+  {
+    id:'rowdyguest', num:55, name:'Rowdy Guest', type:'rowdyguest', image: 'cards/55-rowdyguest.png',
+    desc:"The next property you land on, if it isn't yours, knocks 3 houses off it (a Hotel drops to 2 houses' worth) before you pay rent — the group is rebalanced to stay even, with no refund."
+  },
+  {
+    id:'unoreverse', num:56, name:'Uno Reverse', type:'unoreverse', image: 'cards/56-unoreverse.png',
+    desc:"The next property you land on: if it's someone else's, they pay YOU half the rent instead. If it's your own, you pay half the rent out to the other players, split however you choose."
+  },
+  {
+    id:'extension', num:57, name:'Extension', type:'extension', image: 'cards/57-extension.png',
+    desc:"Give to any player — their next non-doubles roll still lets them go again, without counting toward the doubles-streak jail penalty. Pushed back a turn if they roll real doubles instead; voided entirely if they end up in Jail."
+  },
+  {
+    id:'drivebycoin', num:58, name:'Drive By+++', type:'drivebycoin', image: 'cards/58-drivebyplusplusplus.png',
+    desc:'Flip 4 coins — steal $100 per heads from every player you pass on your next roll (starting or ending on their space counts as passing them). Only in effect for that roll.'
+  },
+  {
+    id:'jailbreak', num:59, name:'Jail Break', type:'jailbreak', image: 'cards/59-jailbreak.png',
+    desc:"Playable only while you're in Jail — breaks everyone out, including you. Every other player freed this way pays you $200."
+  },
+  {
+    id:'rentthief', num:60, name:'Rent Thief', type:'rentthief', image: 'cards/60-rentthief.png',
+    desc:"Give to another player — the next time they land on a property/railroad/utility owned by a third player, that rent comes to you instead of the owner. Needs 3+ active players; if it can no longer be used, swap it for a new card instead of playing it."
+  },
+  {
+    id:'hardhitter', num:61, name:'Hard Hitter', type:'hardhitter', image: 'cards/61-hardhitter.png',
+    desc:"Give to another player. If their next landing owes rent to anyone (not just you), they pay double. If it doesn't (unowned, their own property, tax, etc.), they simply keep this card in their hand instead."
+  },
+  {
+    id:'flashsale', num:62, name:'Flash Sale', type:'flashsale', image: 'cards/62-flashsale.png',
+    desc:'Houses and hotels are half off for the rest of your turn, up to $1000 of full-price value (so up to $500 actually spent). Once that runs out, it\'s back to full price.'
+  },
+  {
+    id:'passbyremix', num:63, name:'Pass By Remix', type:'passbyremix', image: 'cards/63-passbyremix.png',
+    desc:"Give to another player. For every one of your properties they pass over (not land on) this upcoming roll, they pay you $100. Works in both directions."
+  },
+  {
+    id:'stunned', num:64, name:'Stunned', type:'stunned', image: 'cards/64-stunned.png',
+    desc:"Give to another player — for their entire next turn they can only roll and pay rent. No trading, buying/mortgaging property, building, or playing cards."
+  },
+  {
+    id:'giveaway', num:65, name:'Giveaway', type:'giveaway', image: 'cards/65-giveaway.png',
+    desc:'Draw a card for every player still in the game, then hand one to each other player — whatever\'s left over is yours.'
+  },
+  {
+    id:'teleportother', num:66, name:'Teleport Other', type:'teleportother', image: 'cards/66-teleportother.png',
+    desc:"Teleport another player anywhere on the board. Doesn't trigger passing-GO money or any landing effect — it's a pure position move."
+  },
+  {
+    id:'averageroll', num:67, name:'Average Roll', type:'averageroll', image: 'cards/67-averageroll.png',
+    desc:'Instantly rolls a 3 and a 4 for you (7 total) — this counts as your roll for the turn.'
+  },
+  {
+    id:'conductor', num:68, name:'Conductor', type:'conductor', image: 'cards/68-conductor.png',
+    desc:'Your next roll redirects through the railroads: passing over any railroad warps you to one space past the next railroad, then you keep moving with whatever roll you have left.'
+  },
+  {
+    id:'gamblingnight', num:69, name:'Gambling Night', type:'gamblingnight', image: 'cards/69-gamblingnight.png',
+    desc:"Flip 3 coins. Every other player pays $100 per heads into a shared pot; roll 3 tails and you alone pay $200 instead. One random player (maybe you) wins the whole pot."
+  },
+  {
+    id:'oneatatime', num:70, name:'One at a Time', type:'oneatatime', image: 'cards/70-oneatatime.png',
+    desc:'Give to any player (including yourself) — from now on they roll and move one die at a time, resolving each landing before rolling the next. Doubles/triples still count normally.'
+  },
+  {
+    id:'halfchoosing', num:71, name:'Half Choosing', type:'halfchoosing', image: 'cards/71-halfchoosing.png',
+    desc:"Give to another player and choose the value of one of their next roll's dice — the rest roll normally. Locks out Custom until used; Average Roll or skipping the roll can still override it."
+  },
+  {
+    id:'reroll', num:72, name:'ReRoll', type:'reroll', image: 'cards/72-reroll.png',
+    desc:'Choose up to 3 of your own cards and/or properties to return (cards to the draw pile, properties to the bank) and instantly replace each with a random one of the same kind.'
+  },
+];
+
+// Client-only, text-only duplicates of game-logic.js's CHANCE_DECK/CHEST_DECK
+// — the server-side versions carry an `apply` resolver function per card,
+// which is server-only logic the client never needs; this is purely the
+// `text` for the Chance/Community Chest pile-inspect modal (same list,
+// same order, so index-based reference-equality checks against the
+// discard pile in showClassicDeckModal below still line up).
+const CHANCE_DECK = [
+  {text:'Advance to GO. Collect $200.'},
+  {text:'Advance to Illinois Avenue. If you pass GO, collect $200.'},
+  {text:'Advance to St. Charles Place. If you pass GO, collect $200.'},
+  {text:'Advance to the nearest Utility. If unowned, you may buy it from the Bank.'},
+  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.'},
+  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.'},
+  {text:'Bank pays you a dividend of $50.'},
+  {text:'Get Out of Jail Free. This card is kept until needed.'},
+  {text:'Go back 3 spaces.'},
+  {text:'Go to Jail. Do not pass GO, do not collect $200.'},
+  {text:'Make general repairs on all your property: $25 per house, $100 per hotel. (No effect until houses exist.)'},
+  {text:'Pay a speeding fine of $15.'},
+  {text:'Take a trip to Reading Railroad. If you pass GO, collect $200.'},
+  {text:'Advance to Boardwalk.'},
+  {text:'You have been elected Chairman of the Board. Pay each player $50.'},
+  {text:'Your building loan matures. Collect $150.'},
+];
+
+const CHEST_DECK = [
+  {text:'Advance to GO. Collect $200.'},
+  {text:'Bank error in your favor. Collect $200.'},
+  {text:"Doctor's fee. Pay $50."},
+  {text:'From sale of stock you get $50.'},
+  {text:'Get Out of Jail Free. This card is kept until needed.'},
+  {text:'Go to Jail. Do not pass GO, do not collect $200.'},
+  {text:'Grand Opera Night. Collect $50 from every player for opening night seats.'},
+  {text:'Holiday Fund matures. Receive $100.'},
+  {text:'Income tax refund. Collect $20.'},
+  {text:'Life insurance matures. Collect $100.'},
+  {text:'Hospital fees. Pay $100.'},
+  {text:'School fees. Pay $50.'},
+  {text:'Receive $25 consultancy fee.'},
+  {text:'You are assessed for street repairs: $40 per house, $115 per hotel. (No effect until houses exist.)'},
+  {text:'You have won second prize in a beauty contest. Collect $10.'},
+  {text:'You inherit $100.'},
+];
+
+// Client-only duplicate of game-logic.js's ABILITY_DEFS — same reason
+// CARD_DEFS/SPACES are duplicated here: pure display data (name/image/
+// desc), no rule logic. The server is authoritative for who has what.
+const ABILITY_DEFS = [
+  {
+    id:'highroller', num:1, name:'High Roller', image:'abilities/1-highroller.png',
+    desc:"You permanently roll 3 dice (including to break out of Jail). Any 2 matching counts as doubles — roll again, but you may choose not to. All 3 matching wins $500 and resets your doubles streak. Three doubles in a row in the same turn ends your turn instead of sending you to Jail."
+  },
+  {
+    id:'luckyduck', num:2, name:'Lucky Duck', image:'abilities/2-luckyduck.png', usedImage:'abilities/2-luckyduck-used.png',
+    desc:"Every coin flip you make — including ones you use against other players — always comes up in your favor. The first time you'd go bankrupt, you instead revive with $500 (whoever bankrupted you only collects what you actually had). Once per game."
+  },
+  {
+    id:'vampire', num:3, name:'Vampire', image:'abilities/3-vampire.png',
+    desc:"Landing on someone else's housed property (after paying rent) steals one house/hotel-level off it — you can drop it on any one of your own properties, even one that's already a Hotel, stacking a 2nd (or 3rd...) Hotel there. This is the only way past one Hotel — everyone (including you) is still capped at a single Hotel through normal building. You also have Squatting: build up to 2 houses on any property, railroad, or utility you own without needing the full set (railroads $100/house, utilities $50/house, rent scales 1.5x/2x/3x...)."
+  },
+  {
+    id:'firstrateduelist', num:4, name:'First Rate Duelist', image:'abilities/4-firstrateduelist.png',
+    desc:"Double Draw: landing on Chance or Community Chest draws 2 cards from the deck instead of 1 (the classic Chance/Community Chest space effect itself is unaffected). Large Pockets: your hand holds up to 10 cards instead of 5, and you can play 2 cards per turn instead of 1."
+  },
+  {
+    id:'builder', num:5, name:'Builder', image:'abilities/5-builder.png',
+    desc:"Normal building can go up to 2 Hotels (level 10) instead of the usual 1-Hotel cap, on any monopoly — including owning all 4 railroads or both utilities. The moment you complete any monopoly, you're instantly given free houses on every property in it: 2 free each for a $50-$100 house cost (brown, light blue, pink, orange, railroads, utilities), 1 free each for $150-$200 (red, yellow, green, dark blue)."
+  },
+  {
+    id:'greedylandlord', num:6, name:'Greedy Landlord', image:'abilities/6-greedylandlord.png',
+    desc:"Rent collected on your properties is never less than $100, and gets a bonus on top: base rent $100-$650 is +50%, $651-$1000 is +35%, $1001+ is +25%. Whatever rent has already been computed by any other effect (Pass By's percentage, half-rent cards, Hard Hitter's double) counts as the base for this. If the payer has Coupon Clipper, this cancels out entirely and they pay the plain unmodified amount."
+  },
+  {
+    id:'couponclipper', num:7, name:'Coupon Clipper', image:'abilities/7-couponclipper.png',
+    desc:"Rent you owe is discounted: $100 or less is voided completely, $101-$650 is half, $651-$1000 is 65%, $1001+ is 75%. Whatever rent has already been computed by any other effect (Pass By's percentage, half-rent cards, Hard Hitter's double) counts as the base for this. If the property owner has Greedy Landlord, this cancels out entirely and you pay the plain unmodified amount."
+  },
+  {
+    id:'officer', num:8, name:'Officer', image:'abilities/8-officer.png',
+    desc:"You can never be sent to Jail — landing on Go To Jail instead sends a random other player there, and any other Jail-sending effect targeting you just fizzles. Landing on the same space as another player sends THEM to Jail (only when you're the one arriving). Whenever anyone leaves Jail — by rolling doubles or waiting out their 3rd turn — they pay you $100. Income Tax and Luxury Tax are your own properties from the moment you get this ability: everyone else pays you that tax as rent instead of the Free Parking pot (Chance/Community Chest fees still go to the pot as normal)."
+  },
+];
+
+// Board-token art — same pieces/<num>-<slug>.png convention and 60-entry
+// list as hotseat's own PIECE_DEFS. Falls back to a plain colored dot
+// token if a player has no piece chosen yet, or a file 404s.
+const PIECE_DEFS = [
+  {id:'boot', num:1, name:'Boot', image:'pieces/1-boot.png'},
+  {id:'car', num:2, name:'Car', image:'pieces/2-car.png'},
+  {id:'cat', num:3, name:'Cat', image:'pieces/3-cat.png'},
+  {id:'dog', num:4, name:'Dog', image:'pieces/4-dog.png'},
+  {id:'hat', num:5, name:'Hat', image:'pieces/5-hat.png'},
+  {id:'ship', num:6, name:'Ship', image:'pieces/6-ship.png'},
+  {id:'thimble', num:7, name:'Thimble', image:'pieces/7-thimble.png'},
+  {id:'wheelbarrow', num:8, name:'Wheelbarrow', image:'pieces/8-wheelbarrow.png'},
+  {id:'beachball', num:9, name:'Beach Ball', image:'pieces/9-beachball.png'},
+  {id:'bike', num:10, name:'Bike', image:'pieces/10-bike.png'},
+  {id:'bowtie', num:11, name:'Bowtie', image:'pieces/11-bowtie.png'},
+  {id:'camera', num:12, name:'Camera', image:'pieces/12-camera.png'},
+  {id:'cock', num:13, name:'Cock', image:'pieces/13-cock.png'},
+  {id:'computer', num:14, name:'Computer', image:'pieces/14-computer.png'},
+  {id:'cowboyhat', num:15, name:'Cowboy Hat', image:'pieces/15-cowboyhat.png'},
+  {id:'crylaughingemoji', num:16, name:'Cry Laughing Emoji', image:'pieces/16-crylaughingemoji.png'},
+  {id:'dino', num:17, name:'Dino', image:'pieces/17-dino.png'},
+  {id:'dressshoe', num:18, name:'Dress Shoe', image:'pieces/18-dressshoe.png'},
+  {id:'duck', num:19, name:'Duck', image:'pieces/19-duck.png'},
+  {id:'fish', num:20, name:'Fish', image:'pieces/20-fish.png'},
+  {id:'gramophone', num:21, name:'Gramophone', image:'pieces/21-gramophone.png'},
+  {id:'helicopter', num:22, name:'Helicopter', image:'pieces/22-helicopter.png'},
+  {id:'horse', num:23, name:'Horse', image:'pieces/23-horse.png'},
+  {id:'iceandthewrist', num:24, name:'Ice and the Wrist', image:'pieces/24-iceandthewrist.png'},
+  {id:'idk', num:25, name:'Idk', image:'pieces/25-idk.png'},
+  {id:'jetski', num:26, name:'Jetski', image:'pieces/26-jetski.png'},
+  {id:'key', num:27, name:'Key', image:'pieces/27-key.png'},
+  {id:'kissyemoji', num:28, name:'Kissy Emoji', image:'pieces/28-kissyemoji.png'},
+  {id:'lifebouy', num:29, name:'Lifebouy', image:'pieces/29-lifebouy.png'},
+  {id:'moneybags', num:30, name:'Moneybags', image:'pieces/30-moneybags.png'},
+  {id:'monopolyman', num:31, name:'Monopoly Man', image:'pieces/31-monopolyman.png'},
+  {id:'monopolymoney', num:32, name:'Monopoly Money', image:'pieces/32-monopolymoney.png'},
+  {id:'monstertruck', num:33, name:'Monster Truck', image:'pieces/33-monstertruck.png'},
+  {id:'moped', num:34, name:'Moped', image:'pieces/34-moped.png'},
+  {id:'motorcycle', num:35, name:'Motorcycle', image:'pieces/35-motorcycle.png'},
+  {id:'penguin', num:36, name:'Penguin', image:'pieces/36-penguin.png'},
+  {id:'phone', num:37, name:'Phone', image:'pieces/37-phone.png'},
+  {id:'privatejet', num:38, name:'Private Jet', image:'pieces/38-privatejet.png'},
+  {id:'rabbit', num:39, name:'Rabbit', image:'pieces/39-rabbit.png'},
+  {id:'rainboot', num:40, name:'Rain Boot', image:'pieces/40-rainboot.png'},
+  {id:'rollerskate', num:41, name:'Roller Skate', image:'pieces/41-rollerskate.png'},
+  {id:'sailboat', num:42, name:'Sailboat', image:'pieces/42-sailboat.png'},
+  {id:'sandle', num:43, name:'Sandle', image:'pieces/43-sandle.png'},
+  {id:'slicedbread', num:44, name:'Sliced Bread', image:'pieces/44-slicedbread.png'},
+  {id:'slipper', num:45, name:'Slipper', image:'pieces/45-slipper.png'},
+  {id:'smilingemoji', num:46, name:'Smiling Emoji', image:'pieces/46-smilingemoji.png'},
+  {id:'sneaker', num:47, name:'Sneaker', image:'pieces/47-sneaker.png'},
+  {id:'sportscar', num:48, name:'Sports Car', image:'pieces/48-sportscar.png'},
+  {id:'stopwatch', num:49, name:'Stopwatch', image:'pieces/49-stopwatch.png'},
+  {id:'sunglasses', num:50, name:'Sunglasses', image:'pieces/50-sunglasses.png'},
+  {id:'surfboard', num:51, name:'Surfboard', image:'pieces/51-surfboard.png'},
+  {id:'tallboot', num:52, name:'Tallboot', image:'pieces/52-tallboot.png'},
+  {id:'thumbsup', num:53, name:'Thumbs Up', image:'pieces/53-thumbsup.png'},
+  {id:'trumpet', num:54, name:'Trumpet', image:'pieces/54-trumpet.png'},
+  {id:'tub', num:55, name:'Tub', image:'pieces/55-tub.png'},
+  {id:'turtle', num:56, name:'Turtle', image:'pieces/56-turtle.png'},
+  {id:'tv', num:57, name:'TV', image:'pieces/57-tv.png'},
+  {id:'typewriter', num:58, name:'Typewriter', image:'pieces/58-typewriter.png'},
+  {id:'wheel', num:59, name:'Wheel', image:'pieces/59-wheel.png'},
+  {id:'yacht', num:60, name:'Yacht', image:'pieces/60-yacht.png'},
+];
+
+function currentPlayer(){ return state.players[state.current]; }
+
+function findOwner(position){
+  for(const p of state.players){
+    if(p.owned.includes(position)) return p;
+  }
+  return null;
+}
+
+let openDetailTarget = null; // {type:'card', index} | {type:'property', pos} | null
+let openPlayerDetail = null; // playerId of the expanded row in the player list, or null
+
+function openDetailModal(html, wide){
+  const content = document.getElementById('detailModalContent');
+  content.innerHTML = html;
+  content.classList.toggle('wide', !!wide);
+  document.getElementById('detailModal').classList.add('open');
+}
+
+function closeDetailModal(){
+  openDetailTarget = null;
+  document.getElementById('detailModal').classList.remove('open');
+}
+
+function propertySlug(name){
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function rentTableHtml(space, level){
+  return `
+    <table style="width:100%;font-size:9.5px;border-collapse:collapse;margin:8px 0;text-align:center;">
+      <tr style="color:var(--text-dim);">
+        <td>Base</td><td>1🏠</td><td>2🏠</td><td>3🏠</td><td>4🏠</td><td>Hotel</td>
+      </tr>
+      <tr>
+        ${space.rent.map((r,i)=>`<td style="padding:3px 0; ${i===level?'background:var(--accent);color:#111;font-weight:700;border-radius:3px;':''}">$${r}</td>`).join('')}
+      </tr>
+    </table>
+  `;
+}
+
+function showCardDetail(handIndex){
+  const player = state.players[myPlayerId];
+  const card = player.hand[handIndex];
+  if(!card) return;
+  openDetailTarget = {type:'card', index:handIndex};
+
+  const rentThiefUnusable = card.type==='rentthief' && state.players.filter(p=>!p.bankrupt).length<3;
+  const locked = ((card.type==='teleport' || card.type==='taxation' || card.type==='lottery' || card.type==='goanywhere') && !player.reachedFreeParking) || (card.type==='builder' && !playerHasMonopoly(player)) || (card.type==='gamblingluck' && !player.rolledDoubleOnesActive) || (card.type==='jailbreak' && state.phase!=='in-jail') || (card.type==='demolisher' && findHousedPropertiesOf(state.players, player.id).length===0) || rentThiefUnusable || player.stunnedActive;
+  const isMyTurn = myPlayerId === state.current;
+  const disabled = !isMyTurn || state.phase!=='pre-roll' || (player.turnsElapsed||0)===0 || (player.cardsPlayedThisTurn||0)>=maxCardsPerTurn(player) || locked;
+
+  let html = card.image
+    ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+       <div class="detail-fallback" style="display:none;">${card.name}<br>(image not added yet)</div>`
+    : `<div class="detail-fallback">${card.name}</div>`;
+  html += `<div class="detail-title">${card.name}</div>`;
+  html += `<div class="detail-desc">${card.desc}</div>`;
+  if(locked){
+    const lockMsg = card.type==='builder' ? '🔒 Reach a monopoly to unlock' : rentThiefUnusable ? '🔒 Needs 3+ active players' : '🔒 Reach Free Parking to unlock';
+    html += `<div style="font-size:11px;color:var(--danger);margin-bottom:8px;">${lockMsg}</div>`;
+  }
+  if(rentThiefUnusable){
+    html += `<div class="btn-row">
+      <button class="buy" style="flex:1;" onclick="redrawRentThiefCard(${handIndex}); closeDetailModal();">🔄 Draw New Card</button>
+      <button class="skip" style="flex:1;" onclick="discardCard(${handIndex}); closeDetailModal();">Discard</button>
+    </div>`;
+  } else {
+    html += `<div class="btn-row">
+      <button class="buy" style="flex:1;" ${disabled?'disabled':''} onclick="playCard(${handIndex}); closeDetailModal();">Play</button>
+      <button class="skip" style="flex:1;" onclick="discardCard(${handIndex}); closeDetailModal();">Discard</button>
+    </div>`;
+  }
+  openDetailModal(html);
+}
+
+function showPropertyDetail(pos){
+  const player = state.players[myPlayerId];
+  const space = SPACES[pos];
+  if(!player.owned.includes(pos)) return;
+
+  if(space.type === 'property' && ownsFullColorGroup(player, pos)){
+    showPropertySetDetail(space.color);
+    return;
+  }
+
+  openDetailTarget = {type:'property', pos};
+  openDetailModal(propertyDetailHtml(pos));
+}
+
+// Bypasses the "redirect to set view" behavior above — reached from the
+// 🔍 View link inside showPropertySetDetail, so you can still see a
+// monopolized property's image/rent table instead of only its
+// build/sell row. Includes a link back to the set view.
+function showSinglePropertyDetail(pos){
+  const player = state.players[myPlayerId];
+  if(!player.owned.includes(pos)) return;
+  openDetailTarget = {type:'property', pos, forceSingle:true};
+  openDetailModal(propertyDetailHtml(pos));
+}
+
+function propertyDetailHtml(pos){
+  const player = state.players[myPlayerId];
+  const space = SPACES[pos];
+  const isMyTurn = myPlayerId === state.current;
+  const isMortgaged = !!player.mortgaged[pos];
+  const imgPath = 'properties/' + space.num + '-' + propertySlug(space.name) + '.png';
+
+  let html = '';
+  if(space.type === 'property' && ownsFullColorGroup(player, pos)){
+    html += `<button class="secondary" style="width:100%; margin-bottom:8px;" onclick="showPropertySetDetail('${space.color}')">← Back to ${space.color} Set</button>`;
+  }
+  html += `<img src="${imgPath}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+              <div class="detail-fallback" style="display:none;">${space.name}</div>`;
+  html += `<div class="detail-title">${space.name}${isMortgaged?' 🏦 (mortgaged)':''}</div>`;
+
+  if(space.type === 'property'){
+    const level = player.houses[pos] || 0;
+    const levelLabel = isMortgaged ? 'Mortgaged — no rent' : houseLevelLabel(level);
+    html += rentTableHtml(space, level);
+    html += `<div class="detail-desc">${levelLabel}</div>`;
+    const canBuild = isMyTurn && !isMortgaged && level<maxBuildLevelFor(player) && level<=groupMinLevel(player,space.color) && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    const canSell = isMyTurn && level>0 && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    const sellRefund = Math.floor(space.houseCost/2);
+    html += `<div class="btn-row">
+      <button class="secondary" ${canBuild?'':'disabled'} onclick="buyHouse(${pos})">Build ($${space.houseCost})</button>
+      <button class="skip" ${canSell?'':'disabled'} onclick="sellHouse(${pos})">Sell (+$${sellRefund})</button>
+    </div>`;
+  } else if(space.type === 'railroad' || space.type === 'utility'){
+    const level = player.houses[pos] || 0;
+    const owned = player.owned.filter(p=>SPACES[p].type===space.type).length;
+    let rentDesc;
+    if(space.type === 'railroad'){
+      const rent = Math.round(RAILROAD_RENT[owned-1] * nonPropertyHouseMultiplier(level));
+      rentDesc = 'Rent: $'+rent+' ('+owned+'/4 owned)';
+    } else {
+      const mult = owned>=2?10:4;
+      rentDesc = 'Rent: '+mult+'× dice roll'+(level>0?' ×'+nonPropertyHouseMultiplier(level)+' from houses':'')+' ('+owned+'/2 owned)';
+    }
+    html += `<div class="detail-desc">${isMortgaged?'No rent while mortgaged':rentDesc}</div>`;
+    html += `<div class="detail-desc">${isMortgaged?'':houseLevelLabel(level)}</div>`;
+    const builderMonopoly = hasAbility(player,'builder') && ownsAllOfType(player, space.type);
+    const squatting = hasAbility(player,'vampire');
+    let canBuild = false;
+    if(builderMonopoly) canBuild = level < maxBuildLevelFor(player) && level <= groupMinLevelForType(player, space.type);
+    else if(squatting) canBuild = level < 2;
+    canBuild = canBuild && isMyTurn && !isMortgaged && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    const canSell = isMyTurn && level>0 && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    if(builderMonopoly || squatting || level>0){
+      const sellRefund = Math.floor(space.houseCost/2);
+      html += `<div class="btn-row">
+        <button class="secondary" ${canBuild?'':'disabled'} onclick="buyHouse(${pos})">Build ($${space.houseCost})</button>
+        <button class="skip" ${canSell?'':'disabled'} onclick="sellHouse(${pos})">Sell (+$${sellRefund})</button>
+      </div>`;
+    }
+  }
+
+  html += `<div class="btn-row">${mortgageButtonsHtml(player, pos, space, isMyTurn)}</div>`;
+  return html;
+}
+
+// Shown instead of the single-property view once you own every property in
+// a color set — lets you build/sell across the whole monopoly without
+// backing out of the modal between each property (the click-in-click-out
+// friction the owner flagged).
+function showPropertySetDetail(color){
+  const player = state.players[myPlayerId];
+  const isMyTurn = myPlayerId === state.current;
+  const group = colorGroupPositions(color).filter(pos => player.owned.includes(pos));
+  openDetailTarget = {type:'propertyset', color};
+
+  let html = `<div class="detail-title" style="text-transform:capitalize;">${color} Set 🎩 Monopoly!</div>`;
+  html += `<div class="detail-desc">Base rent is doubled while no houses are built. Build/sell freely below — even-building still applies.</div>`;
+  group.forEach(pos=>{
+    const space = SPACES[pos];
+    const isMortgaged = !!player.mortgaged[pos];
+    const level = player.houses[pos] || 0;
+    const levelLabel = isMortgaged ? 'Mortgaged — no rent' : houseLevelLabel(level);
+    const canBuild = isMyTurn && !isMortgaged && level<maxBuildLevelFor(player) && level<=groupMinLevel(player,color) && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    const canSell = isMyTurn && level>0 && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    const sellRefund = Math.floor(space.houseCost/2);
+    html += `<div style="background:var(--panel-2); border-radius:6px; padding:8px; margin-bottom:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
+        <div style="font-weight:700; font-size:12.5px;">${space.name}</div>
+        <button class="secondary" style="padding:2px 8px; font-size:10px;" onclick="showSinglePropertyDetail(${pos})">🔍 View</button>
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">${levelLabel}</div>
+      <div class="btn-row">
+        <button class="secondary" ${canBuild?'':'disabled'} onclick="buyHouse(${pos})">Build ($${space.houseCost})</button>
+        <button class="skip" ${canSell?'':'disabled'} onclick="sellHouse(${pos})">Sell (+$${sellRefund})</button>
+      </div>
+    </div>`;
+  });
+  openDetailModal(html);
+}
+
+function toggleCollapse(id){
+  const el = document.getElementById(id);
+  const arrow = document.getElementById('arrow-'+id);
+  el.classList.toggle('collapsed');
+  if(arrow) arrow.textContent = el.classList.contains('collapsed') ? '▸' : '▾';
+}
+
+function gridPos(pos){
+  // returns {row, col} on the 11x11 grid, see design notes
+  if(pos<=9) return {row:11, col:11-pos};
+  if(pos<=20) return {row:21-pos, col:1};
+  if(pos<=30) return {row:1, col:1+(pos-20)};
+  return {row:1+(pos-30), col:11};
+}
+
+function renderBoard(){
+  const board = document.getElementById('board');
+  board.querySelectorAll('.space').forEach(e=>e.remove());
+  SPACES.forEach((space, i)=>{
+    const {row,col} = gridPos(i);
+    const el = document.createElement('div');
+    el.className = 'space';
+    const isCorner = (i%10)===0;
+    if(isCorner) el.classList.add('corner');
+    if(col===1 && !isCorner) el.classList.add('side-left');
+    if(col===11 && !isCorner) el.classList.add('side-right');
+    el.style.gridRow = row;
+    el.style.gridColumn = col;
+    el.onclick = () => showBoardSpaceDetail(i);
+
+    // One texture slot per board position (0-go.png .. 39-boardwalk.png in
+    // textures/, same <num>-<slug> convention as properties/), regardless
+    // of space type — falls back to the plain text tile if that position's
+    // file doesn't exist yet. Same asset folder hotseat already uses.
+    el.classList.add('has-art');
+    const art = document.createElement('img');
+    art.className = 'art';
+    art.src = 'textures/' + i + '-' + propertySlug(space.name) + '.png';
+    art.onerror = function(){ this.remove(); el.classList.remove('has-art'); };
+    el.appendChild(art);
+    if(space.color){
+      const bar = document.createElement('div');
+      bar.className='color-bar';
+      bar.style.background = COLORS[space.color];
+      el.appendChild(bar);
+    }
+    const nameEl = document.createElement('div');
+    nameEl.className='name';
+    nameEl.textContent = space.name;
+    el.appendChild(nameEl);
+    if(space.price){
+      const priceEl = document.createElement('div');
+      priceEl.className='price';
+      priceEl.textContent = '$'+space.price;
+      el.appendChild(priceEl);
+    }
+    if(space.type === 'free'){
+      const amountEl = document.createElement('div');
+      amountEl.className = 'free-parking-amount';
+      amountEl.textContent = '$'+state.freeParkingPot;
+      el.appendChild(amountEl);
+    }
+    const owner = findOwner(i);
+    if(owner){
+      el.style.outline = '2px solid '+owner.color;
+      const level = owner.houses[i] || 0;
+      if(level > 0){
+        const buildEl = document.createElement('div');
+        buildEl.style.fontSize = '9px';
+        buildEl.style.color = owner.color;
+        buildEl.style.position = 'relative';
+        buildEl.style.zIndex = '1';
+        buildEl.style.background = 'rgba(10,12,14,0.72)';
+        buildEl.style.borderRadius = '2px';
+        buildEl.style.alignSelf = 'flex-start';
+        buildEl.textContent = level<5 ? '🏠'.repeat(level) : '🏨'+(Math.floor(level/5)>1?'×'+Math.floor(level/5):'')+(level%5>0?'+🏠'.repeat(level%5):'');
+        el.appendChild(buildEl);
+      }
+    }
+    board.appendChild(el);
+  });
+
+  // player tokens — while tokenAnimation is set, that one player's token
+  // draws at its in-flight position instead of state's (already-final)
+  // position, so the board visibly walks it there one space at a time
+  // instead of snapping straight to where the server already put it.
+  // Spread out based on the tile's own rendered width rather than a flat
+  // per-player step, so tokens sharing a tile (e.g. everyone starting on
+  // GO) don't spill outside it as player count grows. Real piece art if
+  // the player has one (PIECE_DEFS, same pieces/ folder hotseat uses), a
+  // colored dot fallback otherwise (no piece chosen yet, or the art 404s).
+  const tokenDisplayPositions = state.players.map(p =>
+    p.bankrupt ? null : ((tokenAnimation && tokenAnimation.playerId === p.id) ? tokenAnimation.pos : p.position)
+  );
+  const samePositionCounts = {};
+  tokenDisplayPositions.forEach(pos => { if(pos!=null) samePositionCounts[pos] = (samePositionCounts[pos]||0)+1; });
+  const samePositionSeen = {};
+  state.players.forEach((p, idx)=>{
+    if(p.bankrupt) return;
+    const displayPos = tokenDisplayPositions[idx];
+    const {row,col} = gridPos(displayPos);
+    const spaces = board.querySelectorAll('.space');
+    const target = spaces[displayPos];
+    if(!target) return;
+    const groupLen = samePositionCounts[displayPos];
+    const groupIdx = samePositionSeen[displayPos] = (samePositionSeen[displayPos]||0);
+    samePositionSeen[displayPos]++;
+    const tileWidth = target.offsetWidth || 84;
+    const maxSpread = Math.max(0, tileWidth - 32 - 4);
+    const step = groupLen > 1 ? maxSpread / (groupLen - 1) : 0;
+    const token = document.createElement('div');
+    token.className='token';
+    token.style.left = (4 + groupIdx*step)+'px';
+    token.style.bottom = '2px';
+    const pieceDef = PIECE_DEFS.find(pd=>pd.id===p.piece);
+    if(pieceDef){
+      const img = document.createElement('img');
+      img.src = pieceDef.image;
+      img.style.filter = `drop-shadow(0 0 2px ${p.color}) drop-shadow(0 0 2px ${p.color}) drop-shadow(0 0 4px ${p.color})`;
+      img.onerror = function(){
+        this.remove();
+        token.classList.add('token-fallback');
+        token.style.background = p.color;
+      };
+      token.appendChild(img);
+    } else {
+      token.classList.add('token-fallback');
+      token.style.background = p.color;
+    }
+    target.style.position='relative';
+    target.appendChild(token);
+  });
+}
+
+// Shown whenever THIS browser's player is the one the AFK clock is
+// running on — their own turn, or a trade they haven't responded to yet
+// (server.js decides who that is; state.afkPlayerId just says who).
+// Ticks live off of state.afkDeadline rather than waiting for the next
+// broadcast, via the setInterval below.
+function afkIndicatorHtml(){
+  if(!state || state.afkPlayerId !== myPlayerId || !state.afkDeadline) return '';
+  const remain = Math.max(0, Math.ceil((state.afkDeadline - Date.now())/1000));
+  const m = Math.floor(remain/60), s = remain%60;
+  return '<div style="font-size:11px; color:var(--danger); margin-top:6px;">⏱ Forfeit in '+m+':'+String(s).padStart(2,'0')+' if you stay inactive</div>';
+}
+setInterval(()=>{
+  if(state && state.afkPlayerId === myPlayerId && !tokenAnimation) renderTurnBox();
+}, 1000);
+
+function renderTurnBox(){
+  const box = document.getElementById('turnContent');
+  if(!box) return;
+  const player = currentPlayer();
+
+  // While a token is mid-walk (see animateTokenMove/socket.on('state',...)
+  // below), every connected client shows a generic "Moving…" state instead
+  // of whatever the resulting phase's UI would be (a buy prompt, etc.) —
+  // not just the mover's own screen, so everyone watches the walk finish
+  // before the outcome appears. Looked up by id rather than assuming it's
+  // currentPlayer(), since the turn can already have advanced to someone
+  // else by the time this renders (their whole turn already resolved
+  // server-side before this broadcast arrived).
+  if(tokenAnimation){
+    const animPlayer = state.players[tokenAnimation.playerId];
+    let movingHtml = '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+animPlayer.name+"'s Turn</div>";
+    if(state.lastDice){
+      movingHtml += '<div class="dice">🎲 '+state.lastDice.join(' + ')+'</div>';
+    }
+    movingHtml += '<div style="font-size:13px; color:var(--text-dim); margin-top:6px;">Moving…</div>';
+    box.innerHTML = movingHtml;
+    return;
+  }
+
+  const suddenDeathBanner = state.suddenDeath
+    ? '<div style="background:#3a1414; border:1px solid var(--danger); border-radius:4px; padding:6px 8px; margin-bottom:8px; font-weight:700; color:var(--danger);">💀 SUDDEN DEATH — the card deck is empty. Rent and every other player-to-player payment vanishes into the bank instead of arriving. No GO money, no Free Parking payout.</div>'
+    : '';
+
+  if(myPlayerId !== state.current){
+    box.innerHTML = suddenDeathBanner
+      + '<div style="font-weight:700; color:var(--accent); margin-bottom:6px;">'+player.name+"'s Turn</div>"
+      + '<div style="font-size:12.5px; color:var(--text-dim);">Waiting for '+player.name+' to play...</div>'
+      + afkIndicatorHtml();
+    return;
+  }
+
+  let html = suddenDeathBanner + '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+player.name+"'s Turn</div>";
+  if(player.pendingNotifications && player.pendingNotifications.length > 0){
+    html += '<div style="background:var(--panel-2); border-left:3px solid var(--accent); border-radius:4px; padding:6px 8px; margin-bottom:8px;">';
+    html += player.pendingNotifications.map(n=>'<div style="font-size:12px; margin:2px 0;">🔔 '+n+'</div>').join('');
+    html += '</div>';
+  }
+  if(player.getOutOfJailFree > 0){
+    html += '<div style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">🔑 Get Out of Jail Free: '+player.getOutOfJailFree+'</div>';
+  }
+  if((player.turnsElapsed||0) === 0){
+    html += '<div style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">Cards can\'t be played on your first turn.</div>';
+  } else if((player.cardsPlayedThisTurn||0)>=maxCardsPerTurn(player) && state.phase === 'pre-roll'){
+    html += '<div style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">Already played '+(maxCardsPerTurn(player)>1?'your cards':'a card')+' this turn — roll doubles for another chance.</div>';
+  }
+  if(state.lastDice){
+    const diceCounts = {};
+    state.lastDice.forEach(d=>{ diceCounts[d] = (diceCounts[d]||0)+1; });
+    const diceMax = Math.max(...Object.values(diceCounts));
+    const diceIsDouble = state.lastDice.length >= 2 && diceMax >= 2;
+    const diceIsTriple = state.lastDice.length === 3 && diceMax === 3;
+    html += '<div class="dice">🎲 '+state.lastDice.join(' + ')+(diceIsTriple?' — Triples! +$500':diceIsDouble?' — Doubles!':'')+'</div>';
+  }
+  html += '<div class="btn-row">';
+  if(state.phase === 'in-jail'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">🔒 In Jail — '+player.jailTurns+' turn(s) left. No trading, rent collection, or hand cards until released.</div>';
+    if(player.getOutOfJailFree > 0){
+      html += '<button class="buy" onclick="useGetOutOfJailFree()">Use Get Out of Jail Free</button>';
+    }
+    html += '<button class="buy" onclick="rollForJailBreak()">🎲 Roll to Break Out</button>';
+    html += '<button onclick="serveJailTurn()">End Turn (serve time)</button>';
+  } else if(state.phase === 'confirm-small-move'){
+    const dir = player.smallMoveDir;
+    html += '<div style="font-size:13px;margin-bottom:8px;">Small Moves: use your bonus move '+(dir>0?'forward':'backward')+' 1 space before landing?</div>';
+    html += '<button class="buy" onclick="confirmSmallMove(true)">Yes, move '+(dir>0?'+1':'-1')+'</button>';
+    html += '<button class="skip" onclick="confirmSmallMove(false)">No, stay put</button>';
+  } else if(state.phase === 'choosing-target'){
+    const pending = state.pendingCardPlay;
+    const excludeSelf = pending.card.type === 'switch' || pending.card.type === 'lottery'
+      || pending.card.type === 'hardhitter' || pending.card.type === 'passbyremix'
+      || pending.card.type === 'stunned' || pending.card.type === 'teleportother'
+      || pending.card.type === 'halfchoosing';
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose who "'+pending.card.name+'" targets:</div>';
+    state.players.filter(p=>!p.bankrupt && !p.inJail && (!excludeSelf || p.id!==player.id)).forEach(p=>{
+      html += '<button class="secondary" onclick="chooseCardTarget('+p.id+')">'+p.name+(p.id===player.id?' (yourself)':'')+'</button>';
+    });
+  } else if(state.phase === 'choosing-switch-first'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose the first player to swap:</div>';
+    state.players.filter(p=>!p.bankrupt && !p.inJail).forEach(p=>{
+      html += '<button class="secondary" onclick="chooseSwitchAnyFirst('+p.id+')">'+p.name+(p.id===player.id?' (yourself)':'')+'</button>';
+    });
+  } else if(state.phase === 'choosing-switch-second'){
+    const pending = state.pendingCardPlay;
+    const first = state.players[pending.firstId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">First: <b>'+first.name+'</b>. Now choose who they swap with:</div>';
+    state.players.filter(p=>!p.bankrupt && !p.inJail && p.id!==pending.firstId).forEach(p=>{
+      html += '<button class="secondary" onclick="chooseSwitchAnySecond('+p.id+')">'+p.name+(p.id===player.id?' (yourself)':'')+'</button>';
+    });
+  } else if(state.phase === 'revealing-card'){
+    const pending = state.pendingReveal;
+    const cur = pending.current;
+    html += '<div style="font-size:13px;margin-bottom:6px; font-weight:700; color:var(--accent);">'+(cur.deckType==='chance'?'🎲 Chance':'📦 Community Chest')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px;">'+cur.text+'</div>';
+    if(pending.queue.length > 0){
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">'+pending.queue.length+' more card(s) to draw after this.</div>';
+    }
+    html += '<button class="buy" onclick="acknowledgeRevealCard()">Next</button>';
+  } else if(state.phase === 'flipping-flipdraw'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Flip Draw": flip 3 coins, draw a card for each heads.</div>';
+    html += '<button onclick="flipCoinsForFlipDraw()">🪙 Flip 3 Coins</button>';
+  } else if(state.phase === 'flipdraw-result'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+(pending.headsCount>0?'🎴 Draw '+pending.headsCount+' card(s).':'No heads — no cards drawn.')+'</div>';
+    html += '<button class="buy" onclick="resolveFlipDrawOutcome()">Continue</button>';
+  } else if(state.phase === 'flipping-demolisher'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Demolisher": flip 3 coins, knock a house off an opponent for each heads.</div>';
+    html += '<button onclick="flipCoinsForDemolisher()">🪙 Flip 3 Coins</button>';
+  } else if(state.phase === 'demolisher-destroying'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:12px;margin-bottom:6px;">Knocks remaining: '+pending.demolishesRemaining+'</div>';
+    if(pending.demolishesRemaining > 0){
+      const eligible = [];
+      state.players.forEach(p=>{
+        if(p.id === player.id || p.bankrupt) return;
+        p.owned.forEach(pos=>{ if((p.houses[pos]||0) > 0) eligible.push(pos); });
+      });
+      if(eligible.length === 0){
+        html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">No opposing houses to knock down.</div>';
+      } else {
+        eligible.forEach(pos=>{
+          const space = SPACES[pos];
+          const owner = findOwner(pos);
+          const level = owner.houses[pos];
+          html += '<button class="secondary" onclick="demolishHouse('+pos+')">'+space.name+' ('+houseLevelLabel(level)+' → '+houseLevelLabel(level-1)+', '+owner.name+')</button>';
+        });
+      }
+    }
+    html += '<button class="skip" onclick="skipDemolisherDestroy()">Done</button>';
+  } else if(state.phase === 'flipping-lottery'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Lottery": flip 2 coins.</div>';
+    html += '<button onclick="flipCoinsForLottery()">🪙 Flip 2 Coins</button>';
+  } else if(state.phase === 'lottery-result'){
+    const pending = state.pendingCardPlay;
+    let outcome;
+    if(pending.headsCount === 2) outcome = '🎉 2 Heads! Choose anywhere to go (GO gives $400 instead).';
+    else if(pending.headsCount === 1) outcome = '🎯 1 Heads. Choose anywhere except GO or Free Parking.';
+    else outcome = '💀 0 Heads. Send one other player to Free Parking.';
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+outcome+'</div>';
+    html += '<button class="buy" onclick="resolveLotteryOutcome()">Continue</button>';
+  } else if(state.phase === 'choosing-lottery-destination'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose a destination'+(pending.restricted?' (GO and Free Parking excluded):':' (choosing GO gives you $400 instead):')+'</div>';
+    html += '<select id="lotteryDestSelect" style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">';
+    SPACES.forEach((s,i)=>{
+      if(pending.restricted && (i===0 || i===20)) return;
+      html += `<option value="${i}">${s.name}</option>`;
+    });
+    html += '</select>';
+    html += '<button class="buy" onclick="chooseLotteryDestination(parseInt(document.getElementById(\'lotteryDestSelect\').value))">Go</button>';
+  } else if(state.phase === 'choosing-goanywhere-destination'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose anywhere on the board (choosing GO gives you $400 instead):</div>';
+    html += '<select id="goAnywhereDestSelect" style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">';
+    SPACES.forEach((s,i)=>{
+      html += `<option value="${i}">${s.name}</option>`;
+    });
+    html += '</select>';
+    html += '<button class="buy" onclick="chooseGoAnywhereDestination(parseInt(document.getElementById(\'goAnywhereDestSelect\').value))">Go</button>';
+  } else if(state.phase === 'choosing-teleportother-destination'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose where to teleport '+target.name+' (no landing effect will trigger):</div>';
+    html += '<select id="teleportOtherDestSelect" style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">';
+    SPACES.forEach((s,i)=>{
+      html += `<option value="${i}">${s.name}</option>`;
+    });
+    html += '</select>';
+    html += '<button class="buy" onclick="chooseTeleportOtherDestination(parseInt(document.getElementById(\'teleportOtherDestSelect\').value))">Teleport</button>';
+  } else if(state.phase === 'choosing-halfchoosing-value'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose the value for one of '+target.name+"'s next dice:</div>";
+    for(let v=1; v<=6; v++){
+      html += '<button class="secondary" onclick="chooseHalfChoosingValue('+v+')">'+v+'</button>';
+    }
+  } else if(state.phase === 'choosing-passby-property'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose a property for "'+pending.card.name+'" — if '+target.name+' passes it, they\'ll owe '+Math.round(pending.card.pct*100)+'% rent:</div>';
+    html += '<select id="passByPropertySelect" style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">';
+    SPACES.forEach((s,i)=>{
+      if(s.type!=='property' && s.type!=='railroad' && s.type!=='utility') return;
+      html += `<option value="${i}">${s.name}</option>`;
+    });
+    html += '</select>';
+    html += '<button class="buy" onclick="choosePassByProperty(parseInt(document.getElementById(\'passByPropertySelect\').value))">Set Trap</button>';
+  } else if(state.phase === 'choosing-cardswitch-theirs'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">'+target.name+"'s hand — choose a card to take:</div>";
+    target.hand.forEach((c,i)=>{
+      html += '<button class="secondary" onclick="chooseCardSwitchTheirs('+i+')">'+c.name+'</button>';
+    });
+  } else if(state.phase === 'choosing-cardswitch-mine'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose one of your own cards to give in return:</div>';
+    player.hand.forEach((c,i)=>{
+      html += '<button class="secondary" onclick="chooseCardSwitchMine('+i+')">'+c.name+'</button>';
+    });
+  } else if(state.phase === 'choosing-dice-count'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Diced": choose how many dice to roll next:</div>';
+    html += '<button class="secondary" onclick="chooseDiceCount(1)">1 Die</button>';
+    html += '<button class="secondary" onclick="chooseDiceCount(3)">3 Dice</button>';
+  } else if(state.phase === 'flipping-builder'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Builder": flip 4 coins, build a house per heads (even-build applies).</div>';
+    html += '<button onclick="flipCoinsForBuilder()">🪙 Flip 4 Coins</button>';
+  } else if(state.phase === 'builder-building'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+' — '+pending.headsCount+' heads.</div>';
+    html += '<div style="font-size:12px;margin-bottom:6px;">Builds remaining: '+pending.buildsRemaining+'</div>';
+    if(pending.buildsRemaining > 0){
+      const eligible = player.owned.filter(pos=>{
+        const space = SPACES[pos];
+        if(space.type !== 'property' || !ownsFullColorGroup(player,pos)) return false;
+        const current = player.houses[pos] || 0;
+        if(current > groupMinLevel(player, space.color)) return false;
+        if(current >= maxBuildLevelFor(player)) return false;
+        if(player.money < space.houseCost) return false;
+        return true;
+      });
+      if(eligible.length === 0){
+        html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">No eligible properties to build on right now.</div>';
+      } else {
+        eligible.forEach(pos=>{
+          const space = SPACES[pos];
+          const level = player.houses[pos]||0;
+          html += '<button class="secondary" onclick="buildHouseFromBuilder('+pos+')">'+space.name+' (→ '+houseLevelLabel(level+1)+', $'+space.houseCost+')</button>';
+        });
+      }
+    }
+    html += '<button class="skip" onclick="skipBuilderBuild()">Done</button>';
+  } else if(state.phase === 'upforgrabs-choice'){
+    const pending = state.pendingUpForGrabs;
+    html += '<div style="font-size:13px;margin-bottom:8px;">You passed propert'+(pending.positions.length>1?'ies':'y')+' up for grabs — buy one? (once per turn)</div>';
+    pending.positions.forEach(pos=>{
+      const space = SPACES[pos];
+      html += '<button class="secondary" onclick="chooseUpForGrabsProperty('+pos+')">'+space.name+' ($'+space.price+')</button>';
+    });
+    html += '<button class="skip" onclick="skipUpForGrabs()">Skip</button>';
+  } else if(state.phase === 'choosing-destination'){
+    const pending = state.pendingCardPlay;
+    const isTax = pending.card.type === 'taxation';
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose a destination for "'+pending.card.name+'":</div>';
+    pending.card.destinations.forEach(pos=>{
+      html += '<button class="secondary" onclick="'+(isTax?'chooseTaxationDestination':'chooseTeleportDestination')+'('+pos+')">'+SPACES[pos].name+'</button>';
+    });
+  } else if(state.phase === 'flipping-coins'){
+    const pending = state.pendingCardPlay;
+    if(!pending.flips){
+      html += '<div style="font-size:13px;margin-bottom:8px;">"'+pending.card.name+'": flip 3 coins.</div>';
+      html += '<button onclick="flipCoinsForBonus()">🪙 Flip 3 Coins</button>';
+    } else {
+      html += '<div style="font-size:13px;margin-bottom:8px;">Flipped: '+pending.flips.join(', ')+' — '+pending.headsCount+' heads.</div>';
+      html += '<div style="font-size:12px;margin-bottom:6px;">How many +5 bonuses do you want to use?</div>';
+      for(let n=0; n<=pending.headsCount; n++){
+        html += '<button class="secondary" onclick="chooseSpeedFlipBonus('+n+')">+'+(n*5)+'</button>';
+      }
+    }
+  } else if(state.phase === 'flipping-curse'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:8px;">"'+pending.card.name+'": flip 3 coins. 3 heads wins $1000, 3 tails costs $500.</div>';
+    html += '<button onclick="flipCoinsForCurse()">🪙 Flip 3 Coins</button>';
+  } else if(state.phase === 'curse-result'){
+    const pending = state.pendingCardPlay;
+    let outcome;
+    if(pending.headsCount === 3) outcome = '🎉 3 Heads! You win $1000!';
+    else if(pending.headsCount === 0) outcome = '💀 3 Tails! You lose $500 — next you\'ll distribute it to the other players.';
+    else outcome = 'No effect this time ('+pending.headsCount+' heads).';
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+outcome+'</div>';
+    html += '<button class="buy" onclick="resolveCurseOutcome()">Continue</button>';
+  } else if(state.phase === 'flipping-gamblingnight'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"Gambling Night": flip 3 coins.</div>';
+    html += '<button onclick="flipCoinsForGamblingNight()">🪙 Flip 3 Coins</button>';
+  } else if(state.phase === 'gamblingnight-result'){
+    const pending = state.pendingCardPlay;
+    let outcome;
+    if(pending.headsCount === 0) outcome = '💀 3 Tails! You alone put $200 into the pot.';
+    else outcome = pending.headsCount+' heads — every other player puts up to $'+(pending.headsCount*100)+' each into the pot.';
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+outcome+'</div>';
+    html += '<button class="buy" onclick="resolveGamblingNightOutcome()">Continue</button>';
+  } else if(state.phase === 'flipping-steal'){
+    const pending = state.pendingCardPlay;
+    const numCoins = player.owned.filter(pos => !player.mortgaged[pos]).length;
+    html += '<div style="font-size:13px;margin-bottom:8px;">"'+pending.card.name+'": flip '+numCoins+' coin(s) (one per unmortgaged property you own).</div>';
+    html += '<button onclick="flipCoinsForSteal()">🪙 Flip Coins</button>';
+  } else if(state.phase === 'coinsteal-result'){
+    const pending = state.pendingCardPlay;
+    const amountEach = pending.headsCount * 50;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+(pending.flips.join(', ')||'(no coins)')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+
+      (amountEach>0 ? '💰 '+pending.headsCount+' heads! Collect $'+amountEach+' from each other player.' : 'No heads — no effect this time.')+'</div>';
+    html += '<button class="buy" onclick="resolveCoinStealOutcome()">Continue</button>';
+  } else if(state.phase === 'go-bonus-choice'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">🎉 You landed right on GO! Take the bonus, or warp anywhere else on the board?</div>';
+    html += '<button class="buy" onclick="takeGoBonusMoney()">Take $400 total</button>';
+    html += '<button class="secondary" onclick="chooseGoTeleportOption()">Teleport anywhere</button>';
+  } else if(state.phase === 'go-teleport-destination'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose anywhere on the board (except GO):</div>';
+    html += '<select id="goTeleportSelect" style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">';
+    SPACES.forEach((s,i)=>{
+      if(i===0) return;
+      html += `<option value="${i}">${s.name}</option>`;
+    });
+    html += '</select>';
+    html += '<button class="buy" onclick="chooseGoTeleportDestination(parseInt(document.getElementById(\'goTeleportSelect\').value))">Teleport</button>';
+  } else if(state.phase === 'choosing-go-ability'){
+    const goChoice = state.pendingGoAbilityChoice;
+    html += '<div style="font-size:13px;margin-bottom:8px;">🌟 Pick an ability:</div>';
+    goChoice.choices.forEach(id=>{
+      const ability = ABILITY_DEFS.find(a=>a.id===id);
+      html += `<button class="secondary" style="text-align:left; display:flex; align-items:center; gap:8px; width:100%; margin-bottom:6px;" onclick="chooseGoAbility('${id}')">
+        ${ability.image?`<img src="${ability.image}" style="height:36px;border-radius:4px;" onerror="this.style.display='none'">`:''}
+        <span><b>${ability.name}</b><br><span style="font-size:11px; color:var(--text-dim);">${ability.desc}</span></span>
+      </button>`;
+    });
+  } else if(state.phase === 'choosing-theft-target'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose which property to steal (one short of a monopoly):</div>';
+    pending.targets.forEach(pos=>{
+      const owner = SPACES[pos] && state.players.find(p=>p.owned.includes(pos));
+      const ownerLabel = owner ? owner.name : 'the bank';
+      html += `<button class="secondary" onclick="chooseTheftTarget(${pos})">${SPACES[pos].name} (from ${ownerLabel})</button>`;
+    });
+  } else if(state.phase === 'choosing-theft-giveback'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose a property to give back in return:</div>';
+    player.owned.forEach(pos=>{
+      const level = player.houses[pos]||0;
+      html += `<button class="secondary" onclick="chooseTheftGiveback(${pos})">${SPACES[pos].name}${level>0?' ('+houseLevelLabel(level)+' will be sold off)':''}</button>`;
+    });
+  } else if(state.phase === 'vampire-steal-placement'){
+    const fromName = state.pendingVampireSteal ? state.pendingVampireSteal.fromName : 'a property';
+    html += '<div style="font-size:13px;margin-bottom:8px;">🧛 Vampire stole a house from '+fromName+'! Choose one of your own properties to add it to (no restrictions):</div>';
+    player.owned.forEach(pos=>{
+      const level = player.houses[pos]||0;
+      html += `<button class="secondary" onclick="placeVampireHouse(${pos})">${SPACES[pos].name} (${houseLevelLabel(level)} → ${houseLevelLabel(level+1)})</button>`;
+    });
+  } else if(state.phase === 'flipping-custom'){
+    const pending = state.pendingCardPlay;
+    html += `<div style="font-size:13px;margin-bottom:8px;">"${pending.card.name}": flip 2 coins. Each heads lets you set that die's value.</div>`;
+    html += '<button onclick="flipCoinsForCustom()">🪙 Flip 2 Coins</button>';
+  } else if(state.phase === 'choosing-custom-dice'){
+    const pending = state.pendingCardPlay;
+    const n = pending.diceToChoose;
+    html += `<div style="font-size:13px;margin-bottom:8px;">Choose ${n===2?'both dice':'one die'} for your next roll:</div>`;
+    for(let i=0;i<n;i++){
+      html += `<select id="customDie${i}" style="width:100%; padding:6px; margin-bottom:6px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">`;
+      for(let v=1;v<=6;v++) html += `<option value="${v}">${v}</option>`;
+      html += '</select>';
+    }
+    const collectVals = n===2
+      ? "[parseInt(document.getElementById('customDie0').value), parseInt(document.getElementById('customDie1').value)]"
+      : "[parseInt(document.getElementById('customDie0').value)]";
+    html += `<button class="buy" onclick="chooseCustomDiceValues(${collectVals})">Confirm</button>`;
+  } else if(state.phase === 'custom-result-none'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">No heads — no effect this time.</div>';
+    html += '<button class="buy" onclick="resolveCustomNoEffect()">Continue</button>';
+  } else if(state.phase === 'flipping-slowflips'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:8px;">"'+pending.card.name+'" targeting '+target.name+': flip 4 coins.</div>';
+    html += '<button onclick="flipCoinsForSlow()">🪙 Flip 4 Coins</button>';
+  } else if(state.phase === 'slowflips-result'){
+    const pending = state.pendingCardPlay;
+    const target = state.players[pending.targetId];
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+target.name+' takes '+pending.penalty+' to their next roll ('+pending.tailsCount+' tails).</div>';
+    html += '<button class="buy" onclick="resolveSlowFlipsOutcome()">Continue</button>';
+  } else if(state.phase === 'distributing-curse'){
+    const others = state.players.filter(p=>p.id!==player.id && !p.bankrupt);
+    html += '<div style="font-size:13px;margin-bottom:8px;">Distribute $500 among the other players (must total exactly $500):</div>';
+    others.forEach(p=>{
+      html += '<div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px;">'+p.name+
+        ' <input type="number" id="curse-alloc-'+p.id+'" value="0" min="0" style="width:70px; padding:3px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;"></div>';
+    });
+    html += '<button class="buy" onclick="distributeCurseLoss()">Distribute</button>';
+  } else if(state.phase === 'distributing-unoreverse'){
+    const others = state.players.filter(p=>p.id!==player.id && !p.bankrupt);
+    const amount = state.pendingUnoReverse.amount;
+    html += '<div style="font-size:13px;margin-bottom:8px;">Distribute $'+amount+' among the other players (must total exactly $'+amount+'):</div>';
+    others.forEach(p=>{
+      html += '<div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px;">'+p.name+
+        ' <input type="number" id="unoreverse-alloc-'+p.id+'" value="0" min="0" style="width:70px; padding:3px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;"></div>';
+    });
+    html += '<button class="buy" onclick="distributeUnoReverseRent()">Distribute</button>';
+  } else if(state.phase === 'flipping-drivebycoin'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">"'+state.pendingCardPlay.card.name+'": flip 4 coins — steal $100 per heads from everyone you pass this roll.</div>';
+    html += '<button onclick="flipCoinsForDriveByCoin()">🪙 Flip 4 Coins</button>';
+  } else if(state.phase === 'drivebycoin-result'){
+    const pending = state.pendingCardPlay;
+    html += '<div style="font-size:13px;margin-bottom:6px;">Flipped: '+pending.flips.join(', ')+'</div>';
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">'+(pending.headsCount>0?'💰 '+pending.headsCount+' heads — steal $'+(pending.headsCount*100)+' from everyone you pass this roll.':'No heads — no effect this time.')+'</div>';
+    html += '<button class="buy" onclick="resolveDriveByCoinOutcome()">Continue</button>';
+  } else if(state.phase === 'giveaway-distributing'){
+    const pending = state.pendingGiveaway;
+    html += '<div style="font-size:13px;margin-bottom:8px;">Give one card to each other player — whatever\'s left is yours:</div>';
+    pending.cards.forEach((c,i)=>{
+      html += '<div style="background:var(--panel-2); border-radius:6px; padding:6px 8px; margin-bottom:6px;">';
+      html += '<div style="font-weight:700; font-size:12.5px; margin-bottom:4px;">'+c.name+'</div>';
+      pending.remainingPlayerIds.forEach(pid=>{
+        const p = state.players[pid];
+        html += '<button class="secondary" onclick="assignGiveawayCard('+i+','+pid+')">'+p.name+'</button>';
+      });
+      html += '</div>';
+    });
+  } else if(state.phase === 'choosing-reroll-items'){
+    html += '<div style="font-size:13px;margin-bottom:8px;">Choose up to 3 cards and/or properties to reroll for random new ones:</div>';
+    if(player.hand.length > 0){
+      html += '<div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">Cards</div>';
+      player.hand.forEach((c,i)=>{
+        html += `<label style="display:block; font-size:11.5px; margin:2px 0;"><input type="checkbox" class="reroll-card-cb" value="${i}"> ${c.name}</label>`;
+      });
+    }
+    if(player.owned.length > 0){
+      html += '<div style="font-size:11px; color:var(--text-dim); margin:6px 0 2px;">Properties</div>';
+      [...player.owned].sort((a,b)=>a-b).forEach(pos=>{
+        html += `<label style="display:block; font-size:11.5px; margin:2px 0;"><input type="checkbox" class="reroll-prop-cb" value="${pos}"> ${SPACES[pos].name}</label>`;
+      });
+    }
+    html += '<button class="buy" onclick="performReroll()">Reroll</button>';
+  } else if(state.phase === 'trimming-hand'){
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--danger);">🃏 You have '+player.hand.length+' cards — discard or trade down to '+maxHandSize(player)+' before you can roll.</div>';
+    html += '<div class="thumb-grid">' + player.hand.map((card,i)=>{
+      const img = card.image
+        ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+           <div class="thumb-fallback" style="display:none;">${card.name}</div>`
+        : `<div class="thumb-fallback">${card.name}</div>`;
+      return `<div class="thumb-tile">${img}<div class="thumb-label">${card.name}</div>
+        <button class="skip" style="width:100%; margin-top:3px; padding:3px; font-size:10px;" onclick="discardCard(${i})">Discard</button></div>`;
+    }).join('') + '</div>';
+  } else if(state.phase === 'pre-roll'){
+    if(player.skipRollActive){
+      html += '<div style="font-size:13px;margin-bottom:8px;">⛔ A Skip card is active — you can\'t roll this turn, but you can still play cards, trade, and build.</div>';
+      html += '<button class="skip" onclick="skipRoll()">Skip Roll</button>';
+    } else {
+      html += '<button onclick="rollDice()">Roll Dice</button>';
+    }
+  } else if(state.phase === 'freelo-free-property'){
+    const space = SPACES[state.pendingSpace];
+    html += '<div style="font-size:13px;margin-bottom:8px; font-weight:700; color:var(--accent);">🎉 You got '+space.name+' for free with Freelo!</div>';
+    html += '<button class="buy" onclick="acknowledgeFreeloProperty()">OK</button>';
+  } else if(state.phase === 'awaiting-buy'){
+    const space = SPACES[state.pendingSpace];
+    const price = state.buyDiscount ? Math.ceil(space.price/2) : space.price;
+    const canAfford = player.money >= price && !player.stunnedActive;
+    html += '<div style="font-size:13px;margin-bottom:8px;">'+(player.stunnedActive ? "Stunned — can't buy "+space.name+'.' : canAfford ? 'Buy '+space.name+' for $'+price+(state.buyDiscount?' (half price!)':'')+'?' : "Not enough money to buy "+space.name+' ($'+price+').')+'</div>';
+    if(canAfford) html += '<button class="buy" onclick="buyProperty()">Buy</button>';
+    html += '<button class="skip" onclick="skipBuy()">Skip</button>';
+  } else if(state.phase === 'awaiting-steal'){
+    const space = SPACES[state.pendingSpace];
+    const owner = state.players[state.pendingStealFrom];
+    const stealPrice = space.price * 2;
+    html += '<div style="font-size:13px;margin-bottom:8px;">'+space.name+' is mortgaged, owned by '+owner.name+'. Steal it for $'+stealPrice+'?</div>';
+    if(!player.stunnedActive) html += '<button class="buy" onclick="stealMortgagedProperty()">Steal ($'+stealPrice+')</button>';
+    html += '<button class="skip" onclick="skipSteal()">Skip</button>';
+  } else if(state.phase === 'turn-over'){
+    if(state.doubleBonus){
+      html += '<button class="buy" onclick="rollAgain()">🎲 Roll Again (Doubles!)</button>';
+      if(hasAbility(player,'highroller')){
+        html += '<button onclick="endTurn()">End Turn Instead</button>';
+      }
+    } else {
+      html += '<button onclick="endTurn()">End Turn</button>';
+    }
+  }
+  html += '</div>';
+  html += afkIndicatorHtml();
+  box.innerHTML = html;
+}
+
+function renderDebug(){
+  const box = document.getElementById('debugContent');
+  if(!box) return;
+  const player = state.players[myPlayerId];
+
+  const propertyOptions = SPACES.map((s,i)=>({s,i}))
+    .filter(x => x.s.type==='property' || x.s.type==='railroad' || x.s.type==='utility')
+    .map(x => `<option value="${x.i}">${x.s.name}</option>`).join('');
+
+  const cardOptions = CARD_DEFS.map((c,i)=>`<option value="${i}">${c.name}</option>`).join('');
+
+  const abilityOptions = ABILITY_DEFS.map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
+
+  box.innerHTML = `
+    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Applies to you: <b>${player.name}</b> (no turn restriction)</div>
+    <button onclick="debugAddMoney()">💵 +$500</button>
+    <div style="margin-top:10px;">
+      <select id="debugPropertySelect" style="width:100%; padding:5px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff; margin-bottom:5px;">
+        ${propertyOptions}
+      </select>
+      <button class="secondary" onclick="debugGiveProperty()">Give Property</button>
+    </div>
+    <div style="margin-top:10px;">
+      <select id="debugCardSelect" style="width:100%; padding:5px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff; margin-bottom:5px;">
+        ${cardOptions}
+      </select>
+      <button class="secondary" onclick="debugGiveCard()">Give Card</button>
+    </div>
+    <div style="margin-top:10px;">
+      <select id="debugAbilitySelect" style="width:100%; padding:5px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff; margin-bottom:5px;">
+        ${abilityOptions}
+      </select>
+      <button class="secondary" onclick="debugGiveAbility()">Give Ability${player.abilities.length?' (currently: '+player.abilities.map(id=>ABILITY_DEFS.find(a=>a.id===id).name).join(', ')+')':''}</button>
+    </div>
+  `;
+}
+
+function renderHand(){
+  const player = state.players[myPlayerId];
+  const list = document.getElementById('handList');
+  if(!list) return;
+  if(player.hand.length===0){
+    list.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">No cards yet.</div>';
+    return;
+  }
+  list.innerHTML = '<div class="thumb-grid">' + player.hand.map((card,i)=>{
+    const locked = ((card.type==='teleport' || card.type==='taxation' || card.type==='lottery' || card.type==='goanywhere') && !player.reachedFreeParking) || (card.type==='builder' && !playerHasMonopoly(player)) || (card.type==='gamblingluck' && !player.rolledDoubleOnesActive) || (card.type==='jailbreak' && state.phase!=='in-jail') || (card.type==='rentthief' && state.players.filter(p=>!p.bankrupt).length<3) || (card.type==='demolisher' && findHousedPropertiesOf(state.players, player.id).length===0) || player.stunnedActive;
+    const img = card.image
+      ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+         <div class="thumb-fallback" style="display:none;">${card.name}</div>`
+      : `<div class="thumb-fallback">${card.name}</div>`;
+    return `
+    <div class="thumb-tile" onclick="showCardDetail(${i})">
+      ${img}
+      <div class="thumb-label">${card.name}</div>
+      ${locked ? '<div class="thumb-badge">🔒</div>' : ''}
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function mortgageButtonsHtml(player, pos, space, isMyTurn){
+  const isMortgaged = !!player.mortgaged[pos];
+  const mortgageValue = Math.floor(space.price/2);
+  if(isMortgaged){
+    return `<button class="skip" ${(!isMyTurn || player.money<mortgageValue || player.stunnedActive)?'disabled':''} onclick="unmortgageProperty(${pos})">Unmortgage ($${mortgageValue})</button>`;
+  }
+  const level = player.houses ? (player.houses[pos]||0) : 0;
+  const canMortgage = isMyTurn && level===0 && !player.stunnedActive;
+  return `<button class="secondary" ${canMortgage?'':'disabled'} onclick="mortgageProperty(${pos})">Mortgage (+$${mortgageValue})</button>`;
+}
+
+function renderProperties(){
+  const player = state.players[myPlayerId];
+  const list = document.getElementById('propertyList');
+  const owned = player.owned;
+  if(owned.length === 0){
+    list.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">No properties yet.</div>';
+    return;
+  }
+
+  const railroads = owned.filter(pos => SPACES[pos].type==='railroad').sort((a,b)=>a-b);
+  const utilities = owned.filter(pos => SPACES[pos].type==='utility').sort((a,b)=>a-b);
+  const properties = owned.filter(pos => SPACES[pos].type==='property').sort((a,b)=>a-b);
+
+  function tile(pos){
+    const space = SPACES[pos];
+    const isMortgaged = !!player.mortgaged[pos];
+    const level = player.houses[pos] || 0;
+    const imgPath = 'properties/' + space.num + '-' + propertySlug(space.name) + '.png';
+    const badge = isMortgaged ? '🏦' : (level>0 ? (level<5?'🏠'.repeat(level):(Math.floor(level/5)>1?Math.floor(level/5)+'x ':'')+'HOTEL'+(level%5>0?'+'+(level%5):'')) : '');
+    const barColor = space.color ? COLORS[space.color] : (space.type==='railroad' ? '#888' : '#e2b13c');
+    return `
+      <div class="thumb-tile" onclick="showPropertyDetail(${pos})">
+        <img src="${imgPath}" style="border-color:${barColor}; ${isMortgaged?'opacity:0.55;':''}"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="thumb-fallback" style="display:none; border-color:${barColor}; ${isMortgaged?'opacity:0.55;':''}">${space.name}</div>
+        <div class="thumb-label">${space.name}</div>
+        ${badge ? '<div class="thumb-badge">'+badge+'</div>' : ''}
+      </div>`;
+  }
+
+  let html = '';
+  if(railroads.length){
+    html += '<div class="group-label">🚂 Railroads ('+railroads.length+'/4)</div><div class="thumb-grid">' + railroads.map(tile).join('') + '</div>';
+  }
+  if(utilities.length){
+    html += '<div class="group-label">💡 Utilities ('+utilities.length+'/2)</div><div class="thumb-grid">' + utilities.map(tile).join('') + '</div>';
+  }
+  if(properties.length){
+    html += '<div class="group-label">🏘️ Properties</div><div class="thumb-grid">' + properties.map(tile).join('') + '</div>';
+  }
+
+  list.innerHTML = html;
+}
+
+let tradeTargetId = null;
+
+function renderTrade(){
+  const box = document.getElementById('tradeContent');
+  if(!box) return;
+  const me = state.players[myPlayerId];
+
+  if(state.pendingTrade){
+    const t = state.pendingTrade;
+    const from = state.players[t.fromId];
+    const to = state.players[t.toId];
+    const giveCardNames = (t.giveCardIdx||[]).map(i=>from.hand[i]?.name).filter(Boolean).join(', ');
+    const receiveCardNames = (t.receiveCardIdx||[]).map(i=>to.hand[i]?.name).filter(Boolean).join(', ');
+    const giveNames = [t.giveProps.map(p=>SPACES[p].name).join(', '), giveCardNames].filter(Boolean).join(', ') || 'nothing';
+    const receiveNames = [t.receiveProps.map(p=>SPACES[p].name).join(', '), receiveCardNames].filter(Boolean).join(', ') || 'nothing';
+    const offerHtml = `
+      <div style="font-size:12.5px; margin-bottom:8px;">
+        <b>${from.name}</b> offers: ${giveNames}${t.giveMoney>0?' + $'+t.giveMoney:''}<br>
+        <b>${to.name}</b> offers: ${receiveNames}${t.receiveMoney>0?' + $'+t.receiveMoney:''}
+      </div>`;
+    if(myPlayerId === t.toId){
+      box.innerHTML = offerHtml + (to.stunnedActive
+        ? `<div style="color:var(--text-dim);font-size:12px;">😵 Stunned — can't accept trades this turn.</div>
+           <div class="btn-row"><button class="skip" onclick="declineTrade()">Decline</button></div>`
+        : `<div class="btn-row">
+             <button class="buy" onclick="acceptTrade()">Accept</button>
+             <button class="skip" onclick="declineTrade()">Decline</button>
+           </div>`);
+    } else {
+      box.innerHTML = offerHtml + `<div style="color:var(--text-dim);font-size:12px;">Waiting for ${to.name} to respond...</div>`;
+    }
+    return;
+  }
+
+  if(me.inJail){
+    box.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">🔒 In jail — no trading until released.</div>';
+    return;
+  }
+  if(me.stunnedActive){
+    box.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">😵 Stunned — no trading this turn.</div>';
+    return;
+  }
+
+  const isMyTurn = myPlayerId === state.current;
+  if(!isMyTurn){
+    box.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">Trades can only be proposed on your turn.</div>';
+    return;
+  }
+
+  const others = state.players.filter(p => p.id !== me.id && !p.bankrupt && !p.inJail);
+  if(others.length === 0){
+    box.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">No other players available to trade with right now.</div>';
+    return;
+  }
+  if(tradeTargetId === null || !others.find(p=>p.id===tradeTargetId)){
+    tradeTargetId = others[0].id;
+  }
+  const target = state.players[tradeTargetId];
+
+  function propRow(player, prefix){
+    const owned = [...player.owned].sort((a,b)=>a-b);
+    if(owned.length===0) return '<div style="color:var(--text-dim); font-size:11px;">No properties.</div>';
+    return owned.map(pos=>{
+      const hasHouses = (player.houses[pos]||0) > 0;
+      const id = prefix+'-'+pos;
+      return `<label style="display:block; font-size:11.5px; margin:2px 0; ${hasHouses?'color:var(--text-dim);':''}">
+        <input type="checkbox" id="${id}" ${hasHouses?'disabled':''} onchange="renderTradeButtonState()">
+        ${SPACES[pos].name}${hasHouses?' (has houses — sell first)':''}
+      </label>`;
+    }).join('');
+  }
+
+  function cardRow(player, prefix){
+    if(player.hand.length===0) return '<div style="color:var(--text-dim); font-size:11px;">No cards.</div>';
+    return player.hand.map((card,i)=>{
+      const id = prefix+'card-'+i;
+      return `<label style="display:block; font-size:11.5px; margin:2px 0;">
+        <input type="checkbox" id="${id}" onchange="renderTradeButtonState()">
+        ${card.name}
+      </label>`;
+    }).join('');
+  }
+
+  box.innerHTML = `
+    <div style="font-size:12px; margin-bottom:6px;">Trade with:
+      <select id="tradeTargetSelect" onchange="tradeTargetId=parseInt(this.value); renderTrade();">
+        ${others.map(p=>`<option value="${p.id}" ${p.id===tradeTargetId?'selected':''}>${p.name}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div style="flex:1;">
+        <div style="font-size:11px; color:var(--text-dim); margin-bottom:4px;">${me.name} gives:</div>
+        ${propRow(me,'give')}
+        ${cardRow(me,'give')}
+        <input type="number" id="giveMoney" placeholder="$ amount" min="0" value="0" style="width:100%; margin-top:6px; padding:4px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:11px; color:var(--text-dim); margin-bottom:4px;">${target.name} gives:</div>
+        ${propRow(target,'receive')}
+        <div style="font-size:10.5px; color:var(--text-dim); margin:4px 0;">Hands are hidden — you can't request a specific card, only offer your own.</div>
+        <input type="number" id="receiveMoney" placeholder="$ amount" min="0" value="0" style="width:100%; margin-top:6px; padding:4px; border-radius:4px; border:1px solid #444; background:#1b1f24; color:#fff;">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button onclick="proposeTrade()">Propose Trade</button>
+    </div>
+  `;
+}
+
+function renderTradeButtonState(){
+  // no-op hook: checkbox changes just need the DOM state, read at propose time
+}
+
+
+function togglePlayerDetail(id){
+  openPlayerDetail = (openPlayerDetail === id) ? null : id;
+  renderPlayers();
+}
+
+function renderPlayers(){
+  const list = document.getElementById('playerList');
+  if(!list) return;
+  // Rendered in turnOrder (randomized once at game start — see
+  // newGame/addPlayer in game-logic.js), not raw id order, so "who's
+  // next" always matches what's on screen, top to bottom.
+  const orderedPlayers = (state.turnOrder || state.players.map(p=>p.id)).map(id => state.players[id]);
+  list.innerHTML = orderedPlayers.map((p)=>{
+    const props = p.owned.length;
+    const abilities = (p.abilities||[]).map(id=>ABILITY_DEFS.find(a=>a.id===id)).filter(Boolean);
+    const abilityBadge = abilities.length
+      ? abilities.map(ability=>{
+          const abilityImg = p.luckyDuckRevived && ability.usedImage ? ability.usedImage : ability.image;
+          return `<span title="${ability.desc.replace(/"/g,'&quot;')}">${abilityImg?`<img src="${abilityImg}" style="height:16px;vertical-align:middle;margin:0 3px;" onerror="this.style.display='none'">`:''} (${ability.name})</span>`;
+        }).join('')
+      : '';
+    const open = openPlayerDetail === p.id;
+    const detail = open ? `<div style="padding:8px 4px 12px; font-size:12px; color:var(--text-dim);">
+      <div style="margin-bottom:6px;"><b>Properties (${props}):</b> ${props>0 ? p.owned.map(pos=>SPACES[pos].name).join(', ') : 'None'}</div>
+      <div style="margin-bottom:6px;"><b>Cards in hand:</b> ${p.hand.length}</div>
+      <div><b>Abilit${abilities.length===1?'y':'ies'}:</b> ${abilities.length
+        ? abilities.map(ability=>{
+            const abilityImg = p.luckyDuckRevived && ability.usedImage ? ability.usedImage : ability.image;
+            return `<div style="display:flex; align-items:center; gap:8px; margin-top:4px;">${abilityImg?`<img src="${abilityImg}" style="height:72px;border-radius:6px;cursor:pointer;" onclick="showAbilityDetail(${p.id})" onerror="this.style.display='none'">`:''}<div><div style="font-weight:700; color:var(--accent); cursor:pointer;" onclick="showAbilityDetail(${p.id})">${ability.name}</div><div>${ability.desc}</div></div></div>`;
+          }).join('')
+        : 'None yet — granted on passing GO.'}</div>
+    </div>` : '';
+    return `<div class="player-row ${p.id===state.current?'active':''}" style="cursor:pointer;" onclick="togglePlayerDetail(${p.id})">
+      <span><span class="swatch" style="background:${p.color}"></span>${p.name}${p.id===myPlayerId?' (you)':''}${p.bankrupt?' (bankrupt)':''}${p.disconnected?' (disconnected)':''}${abilityBadge}</span>
+      <span>$${p.money} · ${props} propert${props===1?'y':'ies'}</span>
+    </div>${detail}`;
+  }).join('');
+}
+
+// Shows every ability this player currently holds — most rulesets grant
+// just one, but maxAbilitiesPerPlayer>1 can stack several.
+function showAbilityDetail(playerId){
+  const p = state.players[playerId];
+  if(!p || !p.abilities || p.abilities.length===0) return;
+  let html = '';
+  p.abilities.forEach(id=>{
+    const ability = ABILITY_DEFS.find(a=>a.id===id);
+    if(!ability) return;
+    const img = (p.luckyDuckRevived && ability.usedImage) ? ability.usedImage : ability.image;
+    html += `<img src="${img}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+       <div class="detail-fallback" style="display:none;">${ability.name}<br>(image not added yet)</div>`;
+    html += `<div class="detail-title">${ability.name}</div>`;
+    html += `<div class="detail-desc">${ability.desc}</div>`;
+  });
+  html += `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">${p.name}'s abilit${p.abilities.length===1?'y':'ies'}</div>`;
+  openDetailModal(html);
+}
+
+function unownedPropertyPositions(){
+  const positions = [];
+  SPACES.forEach((s,i)=>{
+    if((s.type==='property' || s.type==='railroad' || s.type==='utility') && !findOwner(i)) positions.push(i);
+  });
+  return positions;
+}
+
+function boardTextureSrc(pos){
+  return 'textures/' + pos + '-' + propertySlug(SPACES[pos].name) + '.png';
+}
+
+// Click-to-inspect for any board space, owned by anyone or no one — always
+// reachable (unlike showPropertyDetail, which only works for a property
+// the viewing player owns), never shows management controls except a
+// "Manage" bridge button when it's the viewer's own property on their own
+// turn. Ported from hotseat's identical system.
+function showBoardSpaceDetail(pos){
+  const space = SPACES[pos];
+  if(!space) return;
+  openDetailTarget = {type:'boardspace', pos};
+  let html;
+  if(space.type === 'go') html = boardSpaceGoHtml();
+  else if(space.type === 'jail') html = boardSpaceJailHtml();
+  else if(space.type === 'gotojail') html = boardSpaceGoToJailHtml();
+  else if(space.type === 'free') html = boardSpaceFreeParkingHtml();
+  else if(space.type === 'chance' || space.type === 'chest') html = boardSpaceChanceChestHtml(pos);
+  else if(space.type === 'tax') html = boardSpaceTaxHtml(pos);
+  else html = boardSpacePropertyHtml(pos);
+  openDetailModal(html);
+}
+
+function boardSpacePropertyHtml(pos){
+  const space = SPACES[pos];
+  const owner = findOwner(pos);
+  const fullArt = 'properties/' + space.num + '-' + propertySlug(space.name) + '.png';
+  const isMortgaged = !!(owner && owner.mortgaged[pos]);
+  const level = owner ? (owner.houses[pos] || 0) : 0;
+
+  let html = `<img src="${boardTextureSrc(pos)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;margin-bottom:8px;" onerror="this.remove()">`;
+  html += `<img src="${fullArt}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+     <div class="detail-fallback" style="display:none;">${space.name}</div>`;
+  html += `<div class="detail-title">${space.name}${isMortgaged?' 🏦 (mortgaged)':''}</div>`;
+
+  if(owner){
+    html += `<div class="detail-desc" style="display:flex;align-items:center;gap:6px;">
+      <span style="width:11px;height:11px;border-radius:50%;background:${owner.color};display:inline-block;flex-shrink:0;"></span>
+      Owned by ${owner.name}
+    </div>`;
+  } else {
+    html += `<div class="detail-desc">Unowned — $${space.price} to buy from the bank</div>`;
+  }
+
+  if(space.type === 'property'){
+    html += rentTableHtml(space, level);
+    if(isMortgaged){
+      html += `<div class="detail-desc">Mortgaged — no rent collected</div>`;
+    } else {
+      const hasMonopoly = owner && ownsFullColorGroup(owner, pos);
+      const doubled = level===0 && hasMonopoly;
+      const rent = doubled ? rentFor(space, level)*2 : rentFor(space, level);
+      html += `<div class="detail-desc">${houseLevelLabel(level)}${doubled?' — full color set, base rent doubled':''}</div>`;
+      if(owner) html += `<div class="detail-desc" style="font-weight:700;color:var(--text);">Rent if you land here: $${rent}</div>`;
+    }
+  } else { // railroad or utility
+    if(isMortgaged){
+      html += `<div class="detail-desc">Mortgaged — no rent collected</div>`;
+    } else if(owner){
+      if(space.type === 'railroad'){
+        const ownedCount = owner.owned.filter(p=>SPACES[p].type==='railroad').length;
+        const rent = Math.round(RAILROAD_RENT[ownedCount-1] * nonPropertyHouseMultiplier(level));
+        html += `<div class="detail-desc" style="font-weight:700;color:var(--text);">Rent if you land here: $${rent} (${ownedCount}/4 railroads owned)</div>`;
+      } else {
+        const ownedCount = owner.owned.filter(p=>SPACES[p].type==='utility').length;
+        const mult = ownedCount>=2 ? 10 : 4;
+        html += `<div class="detail-desc" style="font-weight:700;color:var(--text);">Rent if you land here: ${mult}× the dice roll${level>0?' ×'+nonPropertyHouseMultiplier(level)+' from houses':''} (${ownedCount}/2 utilities owned)</div>`;
+      }
+      html += `<div class="detail-desc">${houseLevelLabel(level)}</div>`;
+    }
+  }
+
+  if(owner && !isMortgaged && hasAbility(owner,'greedylandlord')){
+    html += `<div class="detail-desc">🏦 ${owner.name} has Greedy Landlord — actual rent paid will be boosted further (minimum $100; +50%/+35%/+25% by bracket).</div>`;
+  }
+
+  if(owner && owner.id === myPlayerId && myPlayerId === state.current && state.phase === 'pre-roll'){
+    html += `<button class="secondary" style="width:100%;margin-top:4px;" onclick="showPropertyDetail(${pos})">🔧 Manage (Build / Sell / Mortgage)</button>`;
+  }
+  return html;
+}
+
+function boardSpaceGoHtml(){
+  let html = `<img src="${boardTextureSrc(0)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">GO</div>`;
+  html += `<div class="detail-desc">Collect $200 every time you pass or land on GO. Landing exactly on it lets you choose between $400 total or teleporting anywhere else on the board.</div>`;
+  const r = state.ruleset;
+  const modeDesc = r.abilityMode==='choice'
+    ? `they're offered a choice of ${r.choiceCount} abilities`
+    : `they're granted one random ability`;
+  const capDesc = r.maxAbilitiesPerPlayer>1 ? ` (up to ${r.maxAbilitiesPerPlayer} per player)` : '';
+  const repeatDesc = r.allowRepeatAbilities ? ' Repeats across players are allowed this game.' : ' Never a duplicate across players.';
+  html += `<div class="detail-desc">Passing or landing on GO: until each player reaches their ability cap${capDesc}, ${modeDesc} instead of a card.${repeatDesc} Every pass after that draws a normal card instead.</div>`;
+  html += `<div class="detail-title" style="font-size:13px;margin-top:10px;">Abilities</div>`;
+  ABILITY_DEFS.forEach(a=>{
+    const holders = state.players.filter(p=>hasAbility(p,a.id));
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--panel-2);cursor:pointer;" onclick="showAbilityDetailStatic('${a.id}')">
+      <img src="${a.image}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;margin:0;flex-shrink:0;" onerror="this.style.display='none'">
+      <div style="flex:1;">
+        <div style="font-weight:700;font-size:12.5px;">${a.name}</div>
+        <div style="font-size:11px;color:var(--text-dim);">${holders.length ? holders.map(h=>h.name).join(', ') : 'Unclaimed'}</div>
+      </div>
+    </div>`;
+  });
+  return html;
+}
+
+function showAbilityDetailStatic(abilityId){
+  const ability = ABILITY_DEFS.find(a=>a.id===abilityId);
+  if(!ability) return;
+  const holders = state.players.filter(p=>hasAbility(p,abilityId));
+  const firstHolder = holders[0];
+  const img = (firstHolder && firstHolder.luckyDuckRevived && ability.usedImage) ? ability.usedImage : ability.image;
+  let html = `<img src="${img}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+     <div class="detail-fallback" style="display:none;">${ability.name}<br>(image not added yet)</div>`;
+  html += `<div class="detail-title">${ability.name}</div>`;
+  html += `<div class="detail-desc">${ability.desc}</div>`;
+  html += `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${holders.length ? holders.map(h=>h.name).join(', ')+"'s ability" : 'Not yet claimed by anyone'}</div>`;
+  html += `<button class="secondary" style="width:100%;" onclick="showBoardSpaceDetail(0)">← Back to GO</button>`;
+  openDetailTarget = {type:'abilitystatic', abilityId};
+  openDetailModal(html);
+}
+
+function boardSpaceJailHtml(){
+  let html = `<img src="${boardTextureSrc(10)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">Jail</div>`;
+  html += `<div class="detail-desc">Just landing here while passing by is a free visit — nothing happens. Players actually sent to Jail (via the Go To Jail space, a card, or 3 doubles in a row) stay for up to 2 full turns and are automatically released at the start of their 3rd turn. Rolling doubles on a jail turn breaks them out immediately and moves them that amount. A Get Out of Jail Free card or the Jail Break card can also release them early.</div>`;
+  html += `<div class="detail-desc">🔒 While in jail: no rolling to move normally, no trading, no rent collection on your own properties, no playing hand cards, and no building or selling houses.</div>`;
+  const jailed = state.players.filter(p=>p.inJail && !p.bankrupt);
+  if(jailed.length){
+    html += `<div class="detail-desc" style="font-weight:700;color:var(--text);">Currently in jail: ${jailed.map(p=>p.name+' ('+p.jailTurns+' turn(s) left)').join(', ')}</div>`;
+  }
+  return html;
+}
+
+function boardSpaceGoToJailHtml(){
+  let html = `<img src="${boardTextureSrc(30)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">Go To Jail</div>`;
+  html += `<div class="detail-desc">Landing here sends you directly to Jail — no passing GO, no $200. (The Officer ability redirects this specific space's effect to send a random other player instead.) See the Jail space for what happens once you're there.</div>`;
+  return html;
+}
+
+function boardSpaceFreeParkingHtml(){
+  let html = `<img src="${boardTextureSrc(20)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">Free Parking</div>`;
+  html += `<div class="detail-desc" style="font-weight:700;color:var(--text);">Pot: $${state.freeParkingPot}</div>`;
+  html += `<div class="detail-desc">Landing here collects the entire pot (which refills to $200 afterward), plus grants one random unowned property, railroad, or utility for free from the bank.</div>`;
+  const unowned = unownedPropertyPositions();
+  if(unowned.length){
+    html += `<div class="detail-desc">Still unowned, and up for grabs here (${unowned.length}):</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">` +
+      unowned.map(p=>`<span style="font-size:10.5px;background:var(--panel-2);padding:2px 7px;border-radius:10px;">${SPACES[p].name}</span>`).join('') +
+      `</div>`;
+  } else {
+    html += `<div class="detail-desc">Every property, railroad, and utility is currently owned — landing here now only pays out the pot.</div>`;
+  }
+  return html;
+}
+
+function boardSpaceChanceChestHtml(pos){
+  const space = SPACES[pos];
+  const isChance = space.type === 'chance';
+  const label = isChance ? 'Chance' : 'Community Chest';
+  let html = `<img src="${boardTextureSrc(pos)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">${space.name}</div>`;
+  html += `<div class="detail-desc">Landing here draws one card from the custom deck, plus reveals a ${label} card from its own pile (drawn without repeats until that pile's discards get reshuffled).</div>`;
+  html += `<div class="detail-desc">First Rate Duelist draws 2 custom-deck cards here instead of 1 — the ${label} reveal itself is unaffected either way.</div>`;
+  return html;
+}
+
+function boardSpaceTaxHtml(pos){
+  const space = SPACES[pos];
+  const owner = findOwner(pos);
+  let html = `<img src="${boardTextureSrc(pos)}" onerror="this.remove()">`;
+  html += `<div class="detail-title">${space.name}</div>`;
+  if(owner){
+    html += `<div class="detail-desc" style="display:flex;align-items:center;gap:6px;">
+      <span style="width:11px;height:11px;border-radius:50%;background:${owner.color};display:inline-block;flex-shrink:0;"></span>
+      ${owner.name}'s Officer ability claims this space — landing here pays them $${space.amount} directly instead of the Free Parking pot.
+    </div>`;
+  } else {
+    html += `<div class="detail-desc">Pay $${space.amount} to the Free Parking pot.</div>`;
+  }
+  return html;
+}
+
+function renderLog(){
+  const log = document.getElementById('log');
+  if(!log) return; // panel is hidden right now — state.log itself is never lost
+  log.innerHTML = state.log.slice(-40).map(m=>'<div>'+m+'</div>').join('');
+}
+
+// Every card not yet in the discard pile, in fixed card-list order (not
+// shuffled draw-pile order) — deliberately doesn't expose state.drawPile
+// directly, which would let a player cross-reference remaining draw-pile
+// contents against the full card list to work out what others are
+// holding. Mirrors hotseat's own notYetPlayedCards() exactly.
+function notYetPlayedCards(){
+  const deckCards = state.players.length < 3 ? CARD_DEFS.filter(c=>c.type!=='rentthief') : CARD_DEFS;
+  const discardedIds = new Set((state.discardPile||[]).map(c=>c.id));
+  return deckCards.filter(c=>!discardedIds.has(c.id)).sort((a,b)=>a.num-b.num);
+}
+
+function renderCenterPot(){
+  const center = document.getElementById('center');
+  const drawCount = state.drawPile ? state.drawPile.length : 0;
+  const notYetPlayedCount = notYetPlayedCards().length;
+  const discard = state.discardPile || [];
+  const lastDiscard = discard.length > 0 ? discard[discard.length-1] : null;
+  const discardFace = lastDiscard
+    ? (lastDiscard.image
+        ? `<img src="${lastDiscard.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+           <div class="thumb-fallback" style="display:none; width:100%; height:100%; border-radius:0;">${lastDiscard.name}</div>`
+        : `<div class="thumb-fallback" style="width:100%; height:100%; border-radius:0;">${lastDiscard.name}</div>`)
+    : `<div style="color:var(--text-dim); font-size:10.5px;">Discard<br>empty</div>`;
+  center.innerHTML = `
+    <div class="deck-pile-row">
+      <div style="text-align:center;">
+        <div class="deck-pile" onclick="showDrawPileModal()" title="Draw Pile">
+          <img src="textures/drawpile.png" onerror="this.style.display='none';">
+          <div class="deck-pile-label" style="color:var(--text-dim); font-size:9.5px; line-height:1.5;">🂠<br>${drawCount} to draw<br>${notYetPlayedCount} to play</div>
+        </div>
+        <div style="font-size:10px; color:var(--text-dim); margin-top:3px;">Draw Pile</div>
+      </div>
+      <div style="text-align:center;">
+        <div class="deck-pile" onclick="showDiscardPileModal()" title="Discard Pile">${discardFace}</div>
+        <div style="font-size:10px; color:var(--text-dim); margin-top:3px;">Discard Pile</div>
+      </div>
+    </div>
+    <div class="chance-slot">
+      <div class="deck-pile deck-pile-landscape" onclick="showClassicDeckModal('chance')" title="Chance">
+        <img src="textures/chancepile.png" onerror="this.style.display='none';">
+        <div class="deck-pile-label" style="color:var(--text-dim); font-size:9.5px; line-height:1.5;">❓ ${state.chanceDrawPile.length}/${CHANCE_DECK.length}</div>
+      </div>
+      <div style="font-size:10px; color:var(--text-dim); margin-top:3px;">Chance</div>
+    </div>
+    <div class="chest-slot">
+      <div class="deck-pile deck-pile-landscape" onclick="showClassicDeckModal('chest')" title="Community Chest">
+        <img src="textures/chestpile.png" onerror="this.style.display='none';">
+        <div class="deck-pile-label" style="color:var(--text-dim); font-size:9.5px; line-height:1.5;">📦 ${state.chestDrawPile.length}/${CHEST_DECK.length}</div>
+      </div>
+      <div style="font-size:10px; color:var(--text-dim); margin-top:3px;">Community Chest</div>
+    </div>
+  `;
+}
+
+// Chance/Community Chest resolve instantly (never sit in a hand), so
+// there's no hidden info to protect — one pile per deck, not a draw/
+// discard pair. Unlike hotseat (single process, so it can match
+// discarded cards back to CHANCE_DECK/CHEST_DECK by object reference),
+// online's state arrives over the network as freshly-parsed JSON, which
+// never reference-equals the client's local deck copy — matched by
+// `text` instead. The one wrinkle: Chance has two identical "nearest
+// Railroad" cards, so if only one of that pair has been drawn, both show
+// as used — harmless (they're functionally identical), just noted here
+// in case this logic is ever reused somewhere text-uniqueness matters.
+function showClassicDeckModal(deckType){
+  const isChance = deckType === 'chance';
+  const fullDeck = isChance ? CHANCE_DECK : CHEST_DECK;
+  const drawPile = isChance ? state.chanceDrawPile : state.chestDrawPile;
+  const discardPile = isChance ? state.chanceDiscardPile : state.chestDiscardPile;
+  const discardedTexts = new Set(discardPile.map(c=>c.text));
+  let html = `<div class="detail-title">${isChance?'Chance':'Community Chest'}</div>`;
+  html += `<div class="detail-desc">${drawPile.length}/${fullDeck.length} still in the pile. These are drawn and resolved instantly — never held in a hand — so there's nothing to hide: here's the full set, with a check on whichever have already come up this cycle.</div>`;
+  html += fullDeck.map(card=>{
+    const used = discardedTexts.has(card.text);
+    return `<div class="hand-card" style="${used?'opacity:0.45;':''}"><div class="desc" style="margin:0;">${used?'✅ ':''}${card.text}</div></div>`;
+  }).join('');
+  openDetailTarget = {type:'classicdeck', deckType};
+  openDetailModal(html, true);
+}
+
+function showDrawPileModal(){
+  const drawCount = state.drawPile ? state.drawPile.length : 0;
+  const pile = notYetPlayedCards();
+  let html = '<div class="detail-title">Draw Pile</div>';
+  html += `<div class="detail-desc">${drawCount} card${drawCount===1?'':'s'} left to draw. `
+    + `${pile.length} card${pile.length===1?'':'s'} left to be played overall (this also counts cards currently sitting in hands — shown in card order below, not draw-pile order, so this can't be used to work out exactly what's still undrawn vs. already in someone's hand).</div>`;
+  if(pile.length === 0){
+    html += '<div style="color:var(--text-dim);font-size:12px;">None left.</div>';
+  } else {
+    html += '<div class="thumb-grid">' + pile.map(card=>{
+      const img = card.image
+        ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+           <div class="thumb-fallback" style="display:none;">${card.name}</div>`
+        : `<div class="thumb-fallback">${card.name}</div>`;
+      return `<div class="thumb-tile" onclick="showPileCardDetail('${card.id}','drawpile')">${img}<div class="thumb-label">${card.name}</div></div>`;
+    }).join('') + '</div>';
+  }
+  openDetailTarget = {type:'drawpile'};
+  openDetailModal(html, true);
+}
+
+function showDiscardPileModal(){
+  const pile = state.discardPile || [];
+  let html = '<div class="detail-title">Discard Pile</div>';
+  html += `<div class="detail-desc">${pile.length} card${pile.length===1?'':'s'} played so far — face up, visible to everyone. Most recent first.</div>`;
+  if(pile.length === 0){
+    html += '<div style="color:var(--text-dim);font-size:12px;">Empty.</div>';
+  } else {
+    html += '<div class="thumb-grid">' + pile.slice().reverse().map(card=>{
+      const img = card.image
+        ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+           <div class="thumb-fallback" style="display:none;">${card.name}</div>`
+        : `<div class="thumb-fallback">${card.name}</div>`;
+      return `<div class="thumb-tile" onclick="showPileCardDetail('${card.id}','discardpile')">${img}<div class="thumb-label">${card.name}</div></div>`;
+    }).join('') + '</div>';
+  }
+  openDetailTarget = {type:'discardpile'};
+  openDetailModal(html, true);
+}
+
+function showPileCardDetail(cardId, pileType){
+  const card = CARD_DEFS.find(c=>c.id===cardId);
+  if(!card) return;
+  openDetailTarget = {type:'pilecard', cardId, pileType};
+  const backLabel = pileType === 'discardpile' ? 'Discard Pile' : 'Draw Pile';
+  const backFn = pileType === 'discardpile' ? 'showDiscardPileModal' : 'showDrawPileModal';
+  let html = `<button class="secondary" style="width:100%; margin-bottom:8px;" onclick="${backFn}()">← Back to ${backLabel}</button>`;
+  html += card.image
+    ? `<img src="${card.image}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+       <div class="detail-fallback" style="display:none;">${card.name}<br>(image not added yet)</div>`
+    : `<div class="detail-fallback">${card.name}</div>`;
+  html += `<div class="detail-title">${card.name}</div>`;
+  html += `<div class="detail-desc">${card.desc}</div>`;
+  openDetailModal(html);
+}
+
+function requestPauseGame(){
+  socket.emit('action', {type:'requestPause', args:[]});
+}
+function voteUnpauseGame(){
+  socket.emit('action', {type:'voteUnpause', args:[]});
+}
+
+// Toggles the paused look (banner + dimmed/inert buttons — see the
+// body.game-paused CSS rule) and keeps the Pause/Settings button row in
+// sync. Called from render() so it's always current, not wired into any
+// single phase branch like renderTurnBox is.
+function renderPauseUI(){
+  const pauseBtn = document.getElementById('pauseToggleBtn');
+  const banner = document.getElementById('pauseBanner');
+  if(!state || !pauseBtn || !banner) return;
+
+  pauseBtn.style.display = 'block';
+
+  if(!state.paused){
+    document.body.classList.remove('game-paused');
+    banner.style.display = 'none';
+    pauseBtn.textContent = '⏸️ Pause';
+    pauseBtn.onclick = requestPauseGame;
+    return;
+  }
+
+  document.body.classList.add('game-paused');
+  pauseBtn.style.display = 'none'; // the banner's own Agree button covers this while paused
+
+  const activePlayers = state.players.filter(p=>!p.bankrupt);
+  const votes = state.unpauseVotes || [];
+  const pauser = state.players[state.pausedBy];
+  const iAgreed = votes.includes(myPlayerId);
+  const iAmActive = activePlayers.some(p=>p.id === myPlayerId);
+
+  let html = '⏸️ <strong>Game paused</strong> by '+(pauser?pauser.name:'a player')+'. ';
+  html += votes.length+'/'+activePlayers.length+' agreed to unpause.';
+  if(iAmActive){
+    html += iAgreed
+      ? ' <span style="color:#9aa4af;">You agreed — waiting on everyone else.</span>'
+      : ' <button class="pause-exempt" onclick="voteUnpauseGame()" style="margin-left:8px; background:#c9932f; color:#241d0a; border:none; border-radius:5px; padding:5px 10px; font-size:12px; cursor:pointer; font-weight:700;">Agree to Unpause</button>';
+  }
+  banner.innerHTML = html;
+  banner.style.display = 'block';
+}
+
+function render(){
+  renderPauseUI();
+  renderBoard();
+  renderCenterPot();
+  renderTurnBox();
+  renderHand();
+  renderProperties();
+  renderTrade();
+  renderPlayers();
+  renderLog();
+  renderDebug();
+  if(openDetailTarget){
+    if(openDetailTarget.type === 'card'){
+      if(state.players[myPlayerId].hand[openDetailTarget.index]) showCardDetail(openDetailTarget.index);
+      else closeDetailModal();
+    }
+    else if(openDetailTarget.type === 'property' && state.players[myPlayerId].owned.includes(openDetailTarget.pos)){
+      if(openDetailTarget.forceSingle) showSinglePropertyDetail(openDetailTarget.pos);
+      else showPropertyDetail(openDetailTarget.pos);
+    }
+    else if(openDetailTarget.type === 'propertyset') showPropertySetDetail(openDetailTarget.color);
+    else if(openDetailTarget.type === 'drawpile') showDrawPileModal();
+    else if(openDetailTarget.type === 'discardpile') showDiscardPileModal();
+    else if(openDetailTarget.type === 'pilecard') showPileCardDetail(openDetailTarget.cardId, openDetailTarget.pileType);
+    else if(openDetailTarget.type === 'classicdeck') showClassicDeckModal(openDetailTarget.deckType);
+    else if(openDetailTarget.type === 'boardspace') showBoardSpaceDetail(openDetailTarget.pos);
+    else if(openDetailTarget.type === 'abilitystatic') showAbilityDetailStatic(openDetailTarget.abilityId);
+    else closeDetailModal();
+  }
+}
+
+/* ================================================================
+   MULTIPLAYER WIRING — connects the render/action functions above
+   to the server over Socket.io. This is the only part that's
+   different from the local hotseat version.
+   ================================================================ */
+/* ================================================================
+   CUSTOMIZABLE LAYOUT — each panel can be placed in the left or
+   right column, or hidden entirely. Saved per-browser so it's a
+   personal preference, not shared with other players.
+   ================================================================ */
+const PANEL_DEFS = [
+  {id:'turnContent',    title:'Turn',        contentClass:'collapsible', col:'left'},
+  {id:'handList',       title:'Your Hand',   contentClass:'collapsible', col:'left'},
+  {id:'playerList',     title:'Players',     contentClass:'collapsible', col:'right'},
+  {id:'tradeContent',   title:'Trade',       contentClass:'collapsible', col:'right'},
+  {id:'log',            title:'Game Log',    contentClass:'log collapsible', col:'right'},
+  {id:'debugContent',   title:'🐞 Debug',     contentClass:'collapsible', col:'right'},
+];
+
+function loadLayoutConfig(){
+  try{
+    const saved = JSON.parse(localStorage.getItem('propertyTraderLayout') || '{}');
+    return PANEL_DEFS.reduce((acc,p)=>{
+      acc[p.id] = saved[p.id] || p.col; // 'left' | 'right' | 'hidden'
+      return acc;
+    }, {});
+  } catch(e){
+    return PANEL_DEFS.reduce((acc,p)=>{ acc[p.id]=p.col; return acc; }, {});
+  }
+}
+
+function saveLayoutConfig(config){
+  try{ localStorage.setItem('propertyTraderLayout', JSON.stringify(config)); } catch(e){}
+}
+
+let layoutConfig = loadLayoutConfig();
+
+// Whether THIS room's ruleset turned debug tools on — set from
+// state.ruleset.enableDebugTools once real game state arrives (see
+// socket.on('state', ...) below). Starts false so the panel never shows
+// before that's known. Ruleset-wide, not a personal layout preference —
+// deliberately overrides layoutConfig's per-panel placement for
+// debugContent specifically, so nobody can just re-enable it for
+// themselves via the layout picker.
+let debugToolsEnabled = false;
+
+function buildLayout(){
+  const left = document.getElementById('sidebarLeft');
+  const right = document.getElementById('sidebarRight');
+  left.innerHTML = '';
+  right.innerHTML = '';
+  PANEL_DEFS.forEach(p=>{
+    if(p.id === 'debugContent' && !debugToolsEnabled) return;
+    const placement = layoutConfig[p.id];
+    if(placement === 'hidden') return;
+    const target = placement === 'right' ? right : left;
+    const box = document.createElement('div');
+    box.className = 'card-box';
+    box.innerHTML = `
+      <div class="card-header" onclick="toggleCollapse('${p.id}')">
+        <h2>${p.title}</h2>
+        <span class="collapse-arrow" id="arrow-${p.id}">▾</span>
+      </div>
+      <div class="${p.contentClass}" id="${p.id}"></div>
+    `;
+    target.appendChild(box);
+  });
+}
+
+function openSettings(){
+  let html = '<div class="detail-title">Settings</div>';
+  html += '<div class="detail-desc">🔊 Move sound volume — plays once per step as a token walks across the board. Saved to this browser only.</div>';
+  html += `
+    <div class="layout-setting-row">
+      <span>Volume</span>
+      <input type="range" min="0" max="100" value="${Math.round(soundVolume*100)}"
+             oninput="setSoundVolume(this.value)" onchange="playMoveSound()" style="width:140px;">
+    </div>`;
+  html += '<div class="detail-title" style="margin-top:18px;">Customize Layout</div>';
+  html += '<div class="detail-desc">Choose where each panel shows up, or hide ones you don\'t need. Saved to this browser only.</div>';
+  PANEL_DEFS.forEach(p=>{
+    if(p.id === 'debugContent' && !debugToolsEnabled) return; // ruleset-gated, not a per-browser choice — nothing to place
+    html += `
+      <div class="layout-setting-row">
+        <span>${p.title}</span>
+        <select onchange="setPanelPlacement('${p.id}', this.value)">
+          <option value="left" ${layoutConfig[p.id]==='left'?'selected':''}>Left column</option>
+          <option value="right" ${layoutConfig[p.id]==='right'?'selected':''}>Right column</option>
+          <option value="hidden" ${layoutConfig[p.id]==='hidden'?'selected':''}>Hidden</option>
+        </select>
+      </div>`;
+  });
+  html += '<button class="buy" style="width:100%; margin-top:12px;" onclick="closeDetailModal()">Done</button>';
+  openDetailModal(html);
+}
+
+function setPanelPlacement(panelId, value){
+  layoutConfig[panelId] = value;
+  saveLayoutConfig(layoutConfig);
+  buildLayout();
+  if(state) render();
+}
+
+buildLayout();
+
+const socket = io();
+let state = null;
+let myPlayerId = null;
+let myRoomCode = null;
+
+// ============================================================
+// Reconnect on reload — sessionStorage (not localStorage) is
+// deliberately tab-scoped: it survives a reload of THIS tab (fixing
+// "reloading boots you from the game") but not a real close, and it
+// doesn't leak between multiple tabs open to the same room for local
+// testing. Saved once, from the 'joined' handler below, no matter which
+// path led there (a fresh join, a rejoin, subbing into a seat, or
+// joining as a new player) — they all respond with the same shape.
+// ============================================================
+const SESSION_KEY = 'propertyTraderSession';
+function saveSession(playerId, roomCode, reconnectToken){
+  try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({playerId, roomCode, reconnectToken})); } catch(e){}
+}
+function loadSession(){
+  try{ return JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch(e){ return null; }
+}
+function clearSession(){
+  try{ sessionStorage.removeItem(SESSION_KEY); } catch(e){}
+}
+
+// Attempted once, immediately — before the join screen would otherwise
+// show. If nothing's stored, or the attempt fails, showJoinScreen()
+// falls back to the normal join form (with an error message on failure).
+(function attemptAutoRejoin(){
+  const session = loadSession();
+  if(!session || !session.roomCode || session.playerId == null || !session.reconnectToken) return;
+  document.getElementById('joinScreen').style.display = 'none';
+  socket.emit('rejoin', session);
+})();
+
+function showJoinScreen(message){
+  document.getElementById('joinScreen').style.display = 'flex';
+  document.getElementById('joinError').textContent = message || '';
+}
+
+// ============================================================
+// Sound effects — same as hotseat's: a short move.mp3 tick per step of
+// the token walk, volume persisted per-browser. Fails silently if the
+// file isn't there (same graceful-fallback spirit as missing art).
+// ============================================================
+function loadSoundVolume(){
+  try{
+    const v = parseFloat(localStorage.getItem('propertyTraderSoundVolume'));
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5;
+  } catch(e){ return 0.5; }
+}
+function saveSoundVolume(v){
+  try{ localStorage.setItem('propertyTraderSoundVolume', String(v)); } catch(e){}
+}
+let soundVolume = loadSoundVolume();
+
+function setSoundVolume(value){
+  soundVolume = Math.min(1, Math.max(0, parseInt(value,10)/100));
+  saveSoundVolume(soundVolume);
+}
+
+function playMoveSound(){
+  if(soundVolume <= 0) return;
+  const audio = new Audio('sounds/move.mp3');
+  audio.volume = soundVolume;
+  audio.addEventListener('error', ()=>{}); // no file yet — just stay silent
+  audio.play().catch(()=>{}); // ignore autoplay-policy rejections too
+}
+
+// ============================================================
+// Animated token movement — the server resolves an entire roll/landing
+// synchronously and broadcasts only the final state, same as hotseat's
+// local GL calls do; the difference is EVERY client gets that same
+// broadcast (not just whoever rolled), so the diff-and-animate logic
+// below runs identically on every connected browser. See
+// socket.on('state', ...) for where this gets triggered.
+// ============================================================
+let tokenAnimation = null; // {playerId, pos} | null — the one token currently mid-walk
+
+function animateTokenMove(playerId, fromPos, toPos, afterFn){
+  const forward = (toPos - fromPos + 40) % 40;
+  const backward = 40 - forward;
+  const dir = forward <= backward ? 1 : -1;
+  const steps = dir === 1 ? forward : backward;
+  if(steps === 0){ afterFn(); return; }
+  const stepMs = Math.min(150, Math.max(40, 1500/steps));
+  let pos = fromPos;
+  let i = 0;
+  function tick(){
+    pos = (pos + dir + 40) % 40;
+    i++;
+    tokenAnimation = {playerId, pos};
+    renderBoard();
+    playMoveSound();
+    if(i < steps) setTimeout(tick, stepMs);
+    else { tokenAnimation = null; afterFn(); }
+  }
+  setTimeout(tick, stepMs);
+}
+
+// ============================================================
+// Pre-game ruleset customization — only matters when creating a new room
+// (a joined room already has whatever the creator picked). Builds the
+// ability/card checkbox lists from this file's own CARD_DEFS/ABILITY_DEFS
+// copies once at load, then collects the current UI state into a plain
+// object shape matching game-logic.js's DEFAULT_RULESET on submit.
+// ============================================================
+function toggleRulesetPanel(){
+  const panel = document.getElementById('rulesetPanel');
+  const btn = document.getElementById('rulesetToggleBtn');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  btn.textContent = '⚙️ Customize Rules (only matters when creating) ' + (open ? '▾' : '▴');
+}
+
+function onAbilityModeChange(){
+  const choice = document.querySelector('input[name="abilityMode"]:checked').value === 'choice';
+  document.getElementById('choiceCountRow').style.display = choice ? 'block' : 'none';
+}
+
+function setAllCardCheckboxes(checked){
+  document.querySelectorAll('.ruleset-card-cb').forEach(cb=>{ cb.checked = checked; });
+}
+
+function buildRulesetCheckboxes(){
+  const abilityBox = document.getElementById('abilityCheckboxes');
+  abilityBox.innerHTML = ABILITY_DEFS.map(a=>`
+    <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; margin-bottom:3px;">
+      <input type="checkbox" class="ruleset-ability-cb" value="${a.id}" checked> ${a.name}
+    </label>`).join('');
+
+  const cardBox = document.getElementById('cardCheckboxes');
+  cardBox.innerHTML = CARD_DEFS.map(c=>`
+    <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; margin-bottom:3px;">
+      <input type="checkbox" class="ruleset-card-cb" value="${c.id}" checked> ${c.name}
+    </label>`).join('');
+}
+buildRulesetCheckboxes();
+
+function collectRulesetFromUI(){
+  const disabledAbilityIds = Array.from(document.querySelectorAll('.ruleset-ability-cb'))
+    .filter(cb=>!cb.checked).map(cb=>cb.value);
+  const disabledCardIds = Array.from(document.querySelectorAll('.ruleset-card-cb'))
+    .filter(cb=>!cb.checked).map(cb=>cb.value);
+  return {
+    disabledAbilityIds,
+    disabledCardIds,
+    abilityMode: document.querySelector('input[name="abilityMode"]:checked').value,
+    choiceCount: parseInt(document.getElementById('choiceCountSelect').value, 10),
+    allowRepeatAbilities: document.getElementById('allowRepeatAbilitiesCb').checked,
+    maxAbilitiesPerPlayer: parseInt(document.getElementById('maxAbilitiesSelect').value, 10),
+    enableDebugTools: document.getElementById('enableDebugToolsCb').checked,
+  };
+}
+
+function joinGame(){
+  const name = (document.getElementById('playerNameInput').value || '').trim() || 'Player';
+  const roomCode = (document.getElementById('roomCodeInput').value || '').trim().toUpperCase();
+  const numPlayers = parseInt(document.getElementById('numPlayersSelect').value);
+  document.getElementById('joinError').textContent = '';
+  socket.emit('joinRoom', { name, roomCode: roomCode || null, numPlayers, ruleset: collectRulesetFromUI() });
+}
+
+// ============================================================
+// Sub into a disconnected seat, or join a live game as a brand-new
+// player — shown instead of the plain join form when a room code
+// belongs to a game that's already started. See 'liveRoomJoinOptions'
+// above for what populates liveJoinOptions.
+// ============================================================
+let liveJoinNewPiece = null;
+
+function renderLiveJoinScreen(){
+  document.getElementById('liveJoinScreen').style.display = 'block';
+  if(!liveJoinOptions) return;
+
+  const seatListEl = document.getElementById('liveJoinSeatList');
+  if(liveJoinOptions.disconnectedSeats.length === 0){
+    seatListEl.innerHTML = '<div style="font-size:12px; color:#9aa4af; margin-bottom:6px;">No disconnected seats to take over right now.</div>';
+  } else {
+    seatListEl.innerHTML = '<div style="font-size:12.5px; font-weight:700; margin-bottom:8px;">Sub into a disconnected seat:</div>'
+      + liveJoinOptions.disconnectedSeats.map(s=>{
+        const pieceDef = PIECE_DEFS.find(pd=>pd.id===s.piece);
+        return `<div style="display:flex; align-items:center; gap:10px; padding:8px; margin-bottom:6px; background:#1b1f24; border-radius:8px;">
+          <div style="width:32px; height:32px; border-radius:6px; overflow:hidden; flex-shrink:0; background:#242a31;">
+            ${pieceDef ? `<img src="${pieceDef.image}" style="width:100%;height:100%;object-fit:contain;" onerror="this.style.display='none'">` : ''}
+          </div>
+          <div style="flex:1; font-size:13px; font-weight:700;">${s.name}</div>
+          <button onclick="subInAsSeat(${s.id})" style="padding:6px 12px; background:#4c8bf5; color:#fff; border:none; border-radius:5px; font-size:12px; font-weight:700; cursor:pointer;">Sub in</button>
+        </div>`;
+      }).join('');
+  }
+
+  const newEl = document.getElementById('liveJoinNewSection');
+  if(!liveJoinOptions.canAddNew){
+    newEl.innerHTML = '<div style="font-size:11.5px; color:#777; border-top:1px solid #333; padding-top:12px;">This game is already at the maximum of 8 players.</div>';
+    return;
+  }
+  const taken = new Set(liveJoinOptions.takenPieces || []);
+  const available = PIECE_DEFS.filter(pd=>!taken.has(pd.id) || pd.id===liveJoinNewPiece);
+  newEl.innerHTML = `
+    <div style="border-top:1px solid #333; padding-top:12px; margin-top:4px;">
+      <div style="font-size:12.5px; font-weight:700; margin-bottom:8px;">Or join as a new player (starts fresh — $1500, no properties, behind everyone already playing):</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; max-height:180px; overflow-y:auto; padding:6px; background:#1b1f24; border-radius:8px; margin-bottom:10px;">
+        ${available.map(pd => `
+          <div style="width:56px; text-align:center; cursor:pointer;" onclick="chooseLiveJoinPiece('${pd.id}')">
+            <img src="${pd.image}" style="width:48px;height:48px;object-fit:contain;background:#242a31;border-radius:8px;border:2px solid ${liveJoinNewPiece===pd.id?'#4c8bf5':'transparent'};display:block;margin:0 auto;" onerror="this.style.display='none'">
+            <div style="font-size:9px; color:#9aa4af; margin-top:2px;">${pd.name}</div>
+          </div>
+        `).join('')}
+      </div>
+      <button ${liveJoinNewPiece?'':'disabled'} onclick="joinAsNewPlayerSubmit()" style="width:100%; padding:9px; border:none; border-radius:6px; font-weight:700; font-size:13px; cursor:${liveJoinNewPiece?'pointer':'not-allowed'}; background:${liveJoinNewPiece?'#4cae6c':'#333'}; color:${liveJoinNewPiece?'#fff':'#777'};">
+        ${liveJoinNewPiece ? '▶️ Join as a new player' : 'Pick a piece first'}
+      </button>
+    </div>`;
+}
+
+function chooseLiveJoinPiece(pieceId){
+  liveJoinNewPiece = pieceId;
+  renderLiveJoinScreen();
+}
+
+function subInAsSeat(playerId){
+  socket.emit('subIntoSeat', { roomCode: liveJoinOptions.roomCode, playerId });
+}
+
+function joinAsNewPlayerSubmit(){
+  if(!liveJoinNewPiece) return;
+  const name = (document.getElementById('playerNameInput').value || '').trim() || 'Player';
+  socket.emit('joinAsNewPlayer', { roomCode: liveJoinOptions.roomCode, name, pieceId: liveJoinNewPiece });
+}
+
+function cancelLiveJoin(){
+  liveJoinOptions = null;
+  liveJoinNewPiece = null;
+  document.getElementById('liveJoinScreen').style.display = 'none';
+  showJoinScreen();
+}
+
+socket.on('joined', ({ playerId, roomCode, reconnectToken }) => {
+  myPlayerId = playerId;
+  myRoomCode = roomCode;
+  saveSession(playerId, roomCode, reconnectToken);
+  document.getElementById('joinScreen').style.display = 'none';
+  document.getElementById('liveJoinScreen').style.display = 'none';
+  const banner = document.getElementById('roomBanner');
+  banner.style.display = 'block';
+  banner.textContent = 'Room: ' + roomCode + '  (share this code with friends)';
+});
+
+// A stored session (see attemptAutoRejoin above) turned out to be no
+// good — room's gone, or the token didn't match. Give up on it and show
+// the normal join form instead of leaving the page stuck blank.
+socket.on('rejoinFailed', (msg) => {
+  clearSession();
+  showJoinScreen(msg);
+});
+
+// Sent instead of a flat "already started" error when a room code
+// belongs to a live game — see renderLiveJoinScreen below.
+let liveJoinOptions = null;
+socket.on('liveRoomJoinOptions', (options) => {
+  liveJoinOptions = options;
+  document.getElementById('joinScreen').style.display = 'none';
+  renderLiveJoinScreen();
+});
+
+socket.on('errorMsg', (msg) => {
+  const el = document.getElementById('joinError');
+  if(el) el.textContent = msg;
+  const liveEl = document.getElementById('liveJoinError');
+  if(liveEl) liveEl.textContent = msg;
+});
+
+// ============================================================
+// Pre-game lobby — the server sends 'lobbyState' events while the room
+// hasn't started yet (piece picking + ready-up), then switches to the
+// normal 'state' events once the host starts the game. myLobbyPiece is
+// tracked locally just so the picker can highlight the current selection
+// without waiting on a round trip.
+// ============================================================
+let lobby = null;
+
+socket.on('lobbyState', (l) => {
+  lobby = l;
+  document.getElementById('joinScreen').style.display = 'none';
+  document.getElementById('lobbyScreen').style.display = 'block';
+  renderLobbyScreen();
+});
+
+function renderLobbyScreen(){
+  document.getElementById('lobbyRoomCodeLine').textContent =
+    'Room ' + myRoomCode + ' — share this code with friends. Waiting for ' + lobby.numPlayers + ' player(s).';
+
+  const listEl = document.getElementById('lobbyPlayerList');
+  listEl.innerHTML = lobby.players.map(p=>{
+    const pieceDef = PIECE_DEFS.find(pd=>pd.id===p.piece);
+    const pieceLabel = pieceDef ? pieceDef.name : 'No piece chosen yet';
+    return `<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #333;">
+      <div style="width:36px; height:36px; border-radius:6px; background:#1b1f24; display:flex; align-items:center; justify-content:center; overflow:hidden; flex-shrink:0;">
+        ${pieceDef ? `<img src="${pieceDef.image}" style="width:100%;height:100%;object-fit:contain;" onerror="this.style.display='none'">` : ''}
+      </div>
+      <div style="flex:1;">
+        <div style="font-weight:700; font-size:13px;">${p.name}${p.id===myPlayerId?' (you)':''}${p.id===lobby.hostId?' 👑':''}${p.disconnected?' (disconnected)':''}</div>
+        <div style="font-size:11px; color:#9aa4af;">${pieceLabel}</div>
+      </div>
+      <div style="font-size:12px; font-weight:700; color:${p.ready?'#4cae6c':'#9aa4af'};">${p.ready?'✅ Ready':'⏳ Not ready'}</div>
+    </div>`;
+  }).join('') + Array.from({length: lobby.numPlayers - lobby.players.length}).map(()=>
+    `<div style="padding:8px 0; border-bottom:1px solid #333; color:#666; font-size:12.5px;">Waiting for a player to join…</div>`
+  ).join('');
+
+  const me = lobby.players.find(p=>p.id===myPlayerId);
+  const takenPieces = new Set(lobby.players.map(p=>p.piece).filter(Boolean));
+  const pieceSection = document.getElementById('lobbyPieceSection');
+  if(me){
+    const available = PIECE_DEFS.filter(pd => !takenPieces.has(pd.id) || pd.id===me.piece);
+    pieceSection.innerHTML = `
+      <div style="font-size:12.5px; font-weight:700; margin-bottom:8px;">Choose your piece:</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; max-height:220px; overflow-y:auto; padding:6px; background:#1b1f24; border-radius:8px;">
+        ${available.map(pd => `
+          <div style="width:60px; text-align:center; cursor:pointer;" onclick="lobbyChoosePiece('${pd.id}')">
+            <img src="${pd.image}" style="width:52px;height:52px;object-fit:contain;background:#242a31;border-radius:8px;border:2px solid ${me.piece===pd.id?'#4c8bf5':'transparent'};display:block;margin:0 auto;" onerror="this.style.display='none'">
+            <div style="font-size:9.5px; color:#9aa4af; margin-top:2px;">${pd.name}</div>
+          </div>
+        `).join('')}
+      </div>`;
+  } else {
+    pieceSection.innerHTML = '';
+  }
+
+  const actionsEl = document.getElementById('lobbyActions');
+  let html = '';
+  if(me){
+    html += `<button onclick="toggleLobbyReady()" style="width:100%; padding:10px; margin-bottom:8px; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:pointer; background:${me.ready?'#3a4149':'#4cae6c'}; color:#fff;">${me.ready?'Cancel Ready':'✅ Ready Up'}</button>`;
+  }
+  if(myPlayerId === lobby.hostId){
+    const allFilled = lobby.players.length === lobby.numPlayers;
+    const allReady = lobby.players.every(p=>p.ready);
+    const canStart = allFilled && allReady;
+    html += `<button ${canStart?'':'disabled'} onclick="startGameFromLobby()" style="width:100%; padding:10px; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:${canStart?'pointer':'not-allowed'}; background:${canStart?'#4c8bf5':'#333'}; color:${canStart?'#fff':'#777'};">
+      ${!allFilled ? 'Waiting for more players…' : !allReady ? 'Waiting for everyone to be ready…' : '▶️ Start Game'}
+    </button>`;
+  } else {
+    html += `<div style="font-size:11.5px; color:#9aa4af; text-align:center;">Waiting for the host to start the game.</div>`;
+  }
+  actionsEl.innerHTML = html;
+}
+
+function lobbyChoosePiece(pieceId){ socket.emit('lobbyChoosePiece', { pieceId }); }
+function toggleLobbyReady(){
+  const me = lobby.players.find(p=>p.id===myPlayerId);
+  socket.emit('lobbyToggleReady', { ready: !(me && me.ready) });
+}
+function startGameFromLobby(){ socket.emit('lobbyStartGame'); }
+
+// Bail out of a lobby you don't actually want to be in (wrong room,
+// accidentally created instead of joined, etc.) and go back to the
+// plain join/create form. Tells the server so your seat frees up (an
+// empty accidentally-created room gets cleaned up entirely — see
+// 'leaveRoom' in server.js), and clears the saved session so a later
+// reload doesn't try to silently rejoin the room you just left.
+function leaveLobby(){
+  socket.emit('leaveRoom');
+  clearSession();
+  lobby = null;
+  myPlayerId = null;
+  myRoomCode = null;
+  document.getElementById('lobbyScreen').style.display = 'none';
+  document.getElementById('roomBanner').style.display = 'none';
+  showJoinScreen();
+}
+
+socket.on('state', (s) => {
+  if(lobby){
+    // First real game state — the host just started the game. Switch
+    // from the lobby overlay to the actual board.
+    lobby = null;
+    document.getElementById('lobbyScreen').style.display = 'none';
+  }
+
+  // Ruleset-gated debug panel — rebuild the layout once we actually know
+  // whether this room turned it on. Checked on every broadcast (cheap:
+  // just a boolean compare) rather than only right after the lobby, so a
+  // tab that reconnects straight into a live game (see the reconnect
+  // system) still gets this right even though it never saw the lobby
+  // transition above.
+  if(s.ruleset && !!s.ruleset.enableDebugTools !== debugToolsEnabled){
+    debugToolsEnabled = !!s.ruleset.enableDebugTools;
+    buildLayout();
+  }
+
+  // Find whichever single player's position actually changed since our
+  // last known state, and animate their walk instead of snapping straight
+  // to the new board. Scoped to real dice-roll movement only (same as
+  // hotseat): s.rollLandingPos is only ever set inside rollDice()/
+  // rollForJailBreak(), so its presence is what distinguishes "the token
+  // should walk there" from every other kind of update (money changes,
+  // card-driven teleports, trades, etc., which still snap instantly).
+  const oldState = state;
+  let movedPlayerId = null;
+  if(oldState && s.rollLandingPos != null){
+    for(const np of s.players){
+      const op = oldState.players.find(p=>p.id===np.id);
+      if(op && op.position !== np.position){ movedPlayerId = np.id; break; }
+    }
+  }
+
+  if(movedPlayerId != null){
+    const fromPos = oldState.players.find(p=>p.id===movedPlayerId).position;
+    const checkpoint = s.rollLandingPos;
+    state = s; // commit immediately so money/cards/everything-else is accurate right away
+    tokenAnimation = {playerId: movedPlayerId, pos: fromPos};
+    render();
+    animateTokenMove(movedPlayerId, fromPos, checkpoint, () => {
+      tokenAnimation = null;
+      render(); // reveals the real resulting phase (buy prompt, etc.) once the walk finishes
+    });
+  } else {
+    state = s;
+    render();
+  }
+});
+
+// ---- Action stubs: every button in the render functions above calls
+// one of these by name. Each just tells the server what we want to do;
+// the server runs the real game logic and sends back the new state.
+function rollDice(){ socket.emit('action', {type:'rollDice'}); }
+function rollAgain(){ socket.emit('action', {type:'rollAgain'}); }
+function skipRoll(){ socket.emit('action', {type:'skipRoll'}); }
+function confirmSmallMove(useIt){ socket.emit('action', {type:'confirmSmallMove', args:[useIt]}); }
+function playCard(cardIndex){ socket.emit('action', {type:'playCard', args:[cardIndex]}); }
+function chooseTeleportDestination(pos){ socket.emit('action', {type:'chooseTeleportDestination', args:[pos]}); }
+function chooseCardTarget(targetId){ socket.emit('action', {type:'chooseCardTarget', args:[targetId]}); }
+function chooseSwitchAnyFirst(targetId){ socket.emit('action', {type:'chooseSwitchAnyFirst', args:[targetId]}); }
+function chooseSwitchAnySecond(targetId){ socket.emit('action', {type:'chooseSwitchAnySecond', args:[targetId]}); }
+function acknowledgeRevealCard(){ socket.emit('action', {type:'acknowledgeRevealCard'}); }
+function flipCoinsForFlipDraw(){ socket.emit('action', {type:'flipCoinsForFlipDraw'}); }
+function resolveFlipDrawOutcome(){ socket.emit('action', {type:'resolveFlipDrawOutcome'}); }
+function flipCoinsForDemolisher(){ socket.emit('action', {type:'flipCoinsForDemolisher'}); }
+function flipCoinsForLottery(){ socket.emit('action', {type:'flipCoinsForLottery'}); }
+function resolveLotteryOutcome(){ socket.emit('action', {type:'resolveLotteryOutcome'}); }
+function chooseLotteryDestination(pos){ socket.emit('action', {type:'chooseLotteryDestination', args:[pos]}); }
+function chooseUpForGrabsProperty(pos){ socket.emit('action', {type:'chooseUpForGrabsProperty', args:[pos]}); }
+function skipUpForGrabs(){ socket.emit('action', {type:'skipUpForGrabs'}); }
+function flipCoinsForBuilder(){ socket.emit('action', {type:'flipCoinsForBuilder'}); }
+function buildHouseFromBuilder(position){ socket.emit('action', {type:'buildHouseFromBuilder', args:[position]}); }
+function skipBuilderBuild(){ socket.emit('action', {type:'skipBuilderBuild'}); }
+function chooseDiceCount(n){ socket.emit('action', {type:'chooseDiceCount', args:[n]}); }
+function chooseGoAnywhereDestination(pos){ socket.emit('action', {type:'chooseGoAnywhereDestination', args:[pos]}); }
+function choosePassByProperty(pos){ socket.emit('action', {type:'choosePassByProperty', args:[pos]}); }
+function chooseCardSwitchTheirs(idx){ socket.emit('action', {type:'chooseCardSwitchTheirs', args:[idx]}); }
+function chooseCardSwitchMine(idx){ socket.emit('action', {type:'chooseCardSwitchMine', args:[idx]}); }
+function discardCard(cardIndex){ socket.emit('action', {type:'discardCard', args:[myPlayerId, cardIndex]}); }
+function demolishHouse(position){ socket.emit('action', {type:'demolishHouse', args:[position]}); }
+function skipDemolisherDestroy(){ socket.emit('action', {type:'skipDemolisherDestroy'}); }
+function resolveCustomNoEffect(){ socket.emit('action', {type:'resolveCustomNoEffect'}); }
+function acknowledgeFreeloProperty(){ socket.emit('action', {type:'acknowledgeFreeloProperty'}); }
+function flipCoinsForSteal(){ socket.emit('action', {type:'flipCoinsForSteal'}); }
+function resolveCoinStealOutcome(){ socket.emit('action', {type:'resolveCoinStealOutcome'}); }
+function takeGoBonusMoney(){ socket.emit('action', {type:'takeGoBonusMoney'}); }
+function chooseGoTeleportOption(){ socket.emit('action', {type:'chooseGoTeleportOption'}); }
+function chooseGoTeleportDestination(pos){ socket.emit('action', {type:'chooseGoTeleportDestination', args:[pos]}); }
+function chooseTheftTarget(pos){ socket.emit('action', {type:'chooseTheftTarget', args:[pos]}); }
+function chooseTheftGiveback(pos){ socket.emit('action', {type:'chooseTheftGiveback', args:[pos]}); }
+function flipCoinsForCustom(){ socket.emit('action', {type:'flipCoinsForCustom'}); }
+function chooseCustomDiceValues(vals){ socket.emit('action', {type:'chooseCustomDiceValues', args:[vals]}); }
+function flipCoinsForSlow(){ socket.emit('action', {type:'flipCoinsForSlow'}); }
+function resolveSlowFlipsOutcome(){ socket.emit('action', {type:'resolveSlowFlipsOutcome'}); }
+function chooseTaxationDestination(pos){ socket.emit('action', {type:'chooseTaxationDestination', args:[pos]}); }
+function flipCoinsForBonus(){ socket.emit('action', {type:'flipCoinsForBonus'}); }
+function chooseSpeedFlipBonus(n){ socket.emit('action', {type:'chooseSpeedFlipBonus', args:[n]}); }
+function flipCoinsForCurse(){ socket.emit('action', {type:'flipCoinsForCurse'}); }
+function resolveCurseOutcome(){ socket.emit('action', {type:'resolveCurseOutcome'}); }
+function distributeCurseLoss(){
+  const others = state.players.filter(p=>p.id!==myPlayerId && !p.bankrupt);
+  const amounts = {};
+  others.forEach(p=>{ amounts[p.id] = parseInt(document.getElementById('curse-alloc-'+p.id).value) || 0; });
+  socket.emit('action', {type:'distributeCurseLoss', args:[amounts]});
+}
+function distributeUnoReverseRent(){
+  const others = state.players.filter(p=>p.id!==myPlayerId && !p.bankrupt);
+  const amounts = {};
+  others.forEach(p=>{ amounts[p.id] = parseInt(document.getElementById('unoreverse-alloc-'+p.id).value) || 0; });
+  socket.emit('action', {type:'distributeUnoReverseRent', args:[amounts]});
+}
+function flipCoinsForDriveByCoin(){ socket.emit('action', {type:'flipCoinsForDriveByCoin'}); }
+function resolveDriveByCoinOutcome(){ socket.emit('action', {type:'resolveDriveByCoinOutcome'}); }
+function chooseTeleportOtherDestination(pos){ socket.emit('action', {type:'chooseTeleportOtherDestination', args:[pos]}); }
+function assignGiveawayCard(cardIdx, targetId){ socket.emit('action', {type:'assignGiveawayCard', args:[cardIdx, targetId]}); }
+function chooseHalfChoosingValue(value){ socket.emit('action', {type:'chooseHalfChoosingValue', args:[value]}); }
+function flipCoinsForGamblingNight(){ socket.emit('action', {type:'flipCoinsForGamblingNight'}); }
+function resolveGamblingNightOutcome(){ socket.emit('action', {type:'resolveGamblingNightOutcome'}); }
+function chooseGoAbility(abilityId){ socket.emit('action', {type:'chooseGoAbility', args:[abilityId]}); }
+function performReroll(){
+  const cardIndices = Array.from(document.querySelectorAll('.reroll-card-cb:checked')).map(el=>parseInt(el.value));
+  const propertyPositions = Array.from(document.querySelectorAll('.reroll-prop-cb:checked')).map(el=>parseInt(el.value));
+  socket.emit('action', {type:'performReroll', args:[cardIndices, propertyPositions]});
+}
+function redrawRentThiefCard(cardIndex){ socket.emit('action', {type:'redrawRentThiefCard', args:[myPlayerId, cardIndex]}); }
+function buyProperty(){ socket.emit('action', {type:'buyProperty'}); }
+function skipBuy(){ socket.emit('action', {type:'skipBuy'}); }
+function stealMortgagedProperty(){ socket.emit('action', {type:'stealMortgagedProperty'}); }
+function skipSteal(){ socket.emit('action', {type:'skipSteal'}); }
+function buyHouse(position){ socket.emit('action', {type:'buyHouse', args:[position]}); }
+function sellHouse(position){ socket.emit('action', {type:'sellHouse', args:[position]}); }
+function placeVampireHouse(position){ socket.emit('action', {type:'placeVampireHouse', args:[position]}); }
+function mortgageProperty(position){ socket.emit('action', {type:'mortgageProperty', args:[position]}); }
+function unmortgageProperty(position){ socket.emit('action', {type:'unmortgageProperty', args:[position]}); }
+function endTurn(){ socket.emit('action', {type:'endTurn'}); }
+function serveJailTurn(){ socket.emit('action', {type:'serveJailTurn'}); }
+function rollForJailBreak(){ socket.emit('action', {type:'rollForJailBreak'}); }
+function useGetOutOfJailFree(){ socket.emit('action', {type:'useGetOutOfJailFree'}); }
+function proposeTrade(){
+  const me = state.players[myPlayerId];
+  const target = state.players[tradeTargetId];
+  const giveProps = me.owned.filter(pos => document.getElementById('give-'+pos)?.checked);
+  const receiveProps = target.owned.filter(pos => document.getElementById('receive-'+pos)?.checked);
+  const giveMoney = parseInt(document.getElementById('giveMoney').value) || 0;
+  const receiveMoney = parseInt(document.getElementById('receiveMoney').value) || 0;
+  const giveCardIdx = me.hand.map((c,i)=>i).filter(i => document.getElementById('givecard-'+i)?.checked);
+  socket.emit('action', {type:'proposeTrade', args:[tradeTargetId, giveProps, receiveProps, giveMoney, receiveMoney, giveCardIdx, []]});
+}
+function acceptTrade(){ socket.emit('action', {type:'acceptTrade'}); }
+function declineTrade(){ socket.emit('action', {type:'declineTrade'}); }
+function debugAddMoney(){ socket.emit('action', {type:'debugAddMoney', args:[myPlayerId]}); }
+function debugGiveProperty(){
+  const pos = parseInt(document.getElementById('debugPropertySelect').value);
+  socket.emit('action', {type:'debugGiveProperty', args:[myPlayerId, pos]});
+}
+function debugGiveCard(){
+  const idx = parseInt(document.getElementById('debugCardSelect').value);
+  socket.emit('action', {type:'debugGiveCard', args:[myPlayerId, idx]});
+}
+function debugGiveAbility(){
+  const abilityId = document.getElementById('debugAbilitySelect').value;
+  socket.emit('action', {type:'debugGiveAbility', args:[myPlayerId, abilityId]});
+}
+
+</script>
+
+<div class="detail-modal-overlay" id="detailModal" onclick="if(event.target===this) closeDetailModal()">
+  <div class="detail-modal-content" id="detailModalContent"></div>
+</div>
+</body>
+</html>
