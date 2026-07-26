@@ -24,6 +24,31 @@ const io = new Server(server);
 
 app.use(express.static(__dirname + '/public'));
 
+// Every server-side log line goes through this so Render's log viewer
+// (or any other host) shows a consistent, greppable [tag] prefix plus a
+// millisecond timestamp — the timestamp matters for lining up server
+// events against client-side console logs (see public/index.html's own
+// clientLog) when chasing a timing/race-condition bug, since Render's own
+// log timestamps and a browser's devtools clock aren't the same clock.
+function serverLog(tag, ...args){
+  console.log(`[${new Date().toISOString()}] [${tag}]`, ...args);
+}
+
+// Node's own default handling for these is a bare, untagged stack dump to
+// stderr (uncaughtException even crashes the whole process, taking down
+// every room's in-memory state with it) — neither shows up cleanly next
+// to the rest of the tagged log stream, and a crash-and-restart on a
+// shared long-running server is exactly the kind of thing that's silently
+// eaten every room's state before anyone's had a chance to read why.
+// Logging first (with the full stack) means the cause survives even if
+// the process exits right after.
+process.on('uncaughtException', (err) => {
+  serverLog('FATAL', 'uncaughtException —', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  serverLog('FATAL', 'unhandledRejection —', reason && reason.stack || reason);
+});
+
 // How long a player can go without acting before they're auto-forfeited,
 // and how often rooms are swept to check. Overridable via env vars so a
 // live verification pass can use a short timeout without editing (and
@@ -124,13 +149,18 @@ function handleSeatLeave(socket){
   // Guard against a stale disconnect firing after a faster reconnect
   // (e.g. a quick double-refresh) already claimed this seat with a
   // new socket — only clear it if THIS socket still owns it.
-  if(!seat || seat.socketId !== socket.id) return;
+  if(!seat || seat.socketId !== socket.id){
+    serverLog('SOCKET', socket.id, 'disconnect ignored — stale (seat already reclaimed by a newer socket)', {code, playerId});
+    return;
+  }
   seat.socketId = null;
+  serverLog('SOCKET', socket.id, 'left seat', {code, playerId, phase: room.phase});
 
   if(room.phase === 'lobby' && room.lobby){
     const p = room.lobby.players.find(p=>p.id===playerId);
     if(p) p.disconnected = true;
     if(room.seats.every(s => !s.socketId)){
+      serverLog('ROOM', code, 'deleted — empty lobby, nobody left connected');
       delete rooms[code];
       return;
     }
@@ -187,6 +217,15 @@ const SELF_ONLY_ACTIONS = new Set(['discardCard', 'redrawRentThiefCard']);
 const PAUSE_ACTIONS = new Set(['requestPause', 'voteUnpause']);
 
 io.on('connection', (socket) => {
+  serverLog('SOCKET', socket.id, 'connected');
+
+  socket.on('disconnecting', (reason) => {
+    // Fires before socket.io's own 'disconnect' cleanup, while we can
+    // still see which rooms this socket was in — useful for telling
+    // "closed the tab" apart from "server-side error kicked them" when
+    // reading back through the logs.
+    serverLog('SOCKET', socket.id, 'disconnecting', {reason, rooms: [...socket.rooms].filter(r=>r!==socket.id)});
+  });
 
   socket.on('joinRoom', ({ name, roomCode, numPlayers, ruleset }) => {
     let code = roomCode;
@@ -194,14 +233,17 @@ io.on('connection', (socket) => {
     if(code){
       const room = rooms[code];
       if(!room){
+        serverLog('ROOM', code, 'join rejected — no such room', {socketId: socket.id, name});
         socket.emit('errorMsg', 'No game found with that room code.');
         return;
       }
       if(room.phase !== 'lobby'){
+        serverLog('ROOM', code, 'join redirected to live-room options — already live', {socketId: socket.id, name});
         sendLiveRoomJoinOptions(socket, code, room);
         return;
       }
       if(room.seats.length >= room.maxPlayers){
+        serverLog('ROOM', code, 'join rejected — full', {socketId: socket.id, name, maxPlayers: room.maxPlayers});
         socket.emit('errorMsg', 'That room is already full.');
         return;
       }
@@ -212,6 +254,7 @@ io.on('connection', (socket) => {
       socket.data.roomCode = code;
       socket.data.playerId = playerId;
       socket.join(code);
+      serverLog('ROOM', code, 'lobby joined', {socketId: socket.id, playerId, name});
       socket.emit('joined', { playerId, roomCode: code, reconnectToken });
       broadcastLobby(code);
       return;
@@ -241,6 +284,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = code;
     socket.data.playerId = 0;
     socket.join(code);
+    serverLog('ROOM', code, 'created', {socketId: socket.id, name, numPlayers: n, debugToolsEnabled: normalizedRuleset.enableDebugTools});
     socket.emit('joined', { playerId: 0, roomCode: code, reconnectToken });
     broadcastLobby(code);
   });
@@ -256,6 +300,7 @@ io.on('connection', (socket) => {
     const room = roomCode && rooms[roomCode];
     const seat = room && room.seats && room.seats[playerId];
     if(!seat || !reconnectToken || seat.reconnectToken !== reconnectToken){
+      serverLog('SOCKET', socket.id, 'rejoin failed — no matching seat/token', {roomCode, playerId, roomExists: !!room});
       socket.emit('rejoinFailed', 'Could not reconnect to that game — join again below.');
       return;
     }
@@ -263,6 +308,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = roomCode;
     socket.data.playerId = playerId;
     socket.join(roomCode);
+    serverLog('SOCKET', socket.id, 'rejoined', {roomCode, playerId, phase: room.phase});
 
     if(room.phase === 'lobby'){
       const p = room.lobby.players.find(p=>p.id===playerId);
@@ -286,10 +332,12 @@ io.on('connection', (socket) => {
     if(!room || room.phase !== 'live') return;
     const seat = room.seats && room.seats[playerId];
     if(!seat){
+      serverLog('SOCKET', socket.id, 'subIntoSeat rejected — seat no longer exists', {roomCode, playerId});
       socket.emit('errorMsg', 'That seat no longer exists.');
       return;
     }
     if(seat.socketId){
+      serverLog('SOCKET', socket.id, 'subIntoSeat rejected — race, someone already reconnected first', {roomCode, playerId});
       socket.emit('errorMsg', 'That seat is no longer available — someone already reconnected to it.');
       return;
     }
@@ -299,6 +347,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = roomCode;
     socket.data.playerId = playerId;
     socket.join(roomCode);
+    serverLog('SOCKET', socket.id, 'subbed into seat', {roomCode, playerId});
     const p = room.state.players[playerId];
     if(p) p.disconnected = false;
     socket.emit('joined', { playerId, roomCode, reconnectToken });
@@ -318,6 +367,7 @@ io.on('connection', (socket) => {
     const playerId = gameLogic.addPlayer(name, takenByOther ? null : pieceId);
     room.state = gameLogic.getState();
     if(playerId == null){
+      serverLog('ROOM', roomCode, 'joinAsNewPlayer rejected — already at 8 players', {socketId: socket.id, name});
       socket.emit('errorMsg', 'This game is already at the maximum of 8 players.');
       return;
     }
@@ -326,6 +376,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = roomCode;
     socket.data.playerId = playerId;
     socket.join(roomCode);
+    serverLog('ROOM', roomCode, 'new player joined a live game', {socketId: socket.id, playerId, name});
     socket.emit('joined', { playerId, roomCode, reconnectToken });
     broadcastState(roomCode);
   });
@@ -384,18 +435,26 @@ io.on('connection', (socket) => {
     room.lobby = null;
     room.trackedActingPlayerId = whoIsOnTheHook(state);
     room.actionableSince = Date.now();
+    serverLog('ROOM', code, 'game started', {numPlayers: room.trackedActingPlayerId != null && state.players.length, firstToAct: room.trackedActingPlayerId});
     broadcastState(code);
   });
 
   socket.on('action', ({ type, args }) => {
     const code = socket.data.roomCode;
     const room = code && rooms[code];
-    if(!room || room.phase !== 'live') return;
+    if(!room || room.phase !== 'live'){
+      serverLog('ACTION', socket.id, 'dropped — no live room for this socket', {type, code, roomPhase: room && room.phase});
+      return;
+    }
     const playerId = socket.data.playerId;
     args = args || [];
+    serverLog('ACTION', code, `p${playerId} >`, type, args.length ? args : '', `(room was: phase=${room.state.phase} current=p${room.state.current}${room.state.pendingTrade?' pendingTradeTo=p'+room.state.pendingTrade.toId:''}${room.state.paused?' PAUSED':''})`);
 
     const fn = gameLogic[type];
-    if(typeof fn !== 'function') return;
+    if(typeof fn !== 'function'){
+      serverLog('ACTION', code, `p${playerId}`, 'REJECTED — unknown action type', type);
+      return;
+    }
 
     gameLogic.setState(room.state);
     const state = gameLogic.getState();
@@ -403,15 +462,18 @@ io.on('connection', (socket) => {
     if(PAUSE_ACTIONS.has(type)){
       args[0] = playerId; // always target yourself, regardless of what the client sent
     } else if(state.paused){
+      serverLog('ACTION', code, `p${playerId}`, 'REJECTED — game is paused', type);
       socket.emit('errorMsg', 'The game is paused — waiting for everyone to agree to unpause.');
       return;
     } else {
       if(TURN_GATED.has(type) && playerId !== state.current){
+        serverLog('ACTION', code, `p${playerId}`, 'REJECTED — not their turn', {type, actualCurrent: state.current});
         socket.emit('errorMsg', "It's not your turn.");
         return;
       }
       if(TRADE_GATED.has(type)){
         if(!state.pendingTrade || playerId !== state.pendingTrade.toId){
+          serverLog('ACTION', code, `p${playerId}`, 'REJECTED — no pending trade for them', type);
           socket.emit('errorMsg', 'No pending trade for you to respond to.');
           return;
         }
@@ -422,6 +484,7 @@ io.on('connection', (socket) => {
         // game can't have someone reach for these via devtools even if
         // the UI never shows the button.
         if(!state.ruleset.enableDebugTools){
+          serverLog('ACTION', code, `p${playerId}`, 'REJECTED — debug tools disabled', type);
           socket.emit('errorMsg', 'Debug tools are disabled for this game.');
           return;
         }
@@ -431,14 +494,23 @@ io.on('connection', (socket) => {
       }
     }
 
+    const startedAt = Date.now();
     try {
       fn(...args);
     } catch (err) {
-      console.error('Action error:', type, err);
+      serverLog('ERROR', code, `p${playerId}`, 'threw while running action', type, args, '\n', err.stack || err);
       return;
     }
+    const elapsedMs = Date.now() - startedAt;
 
     room.state = gameLogic.getState();
+    // Post-action summary — the resulting phase/current plus whatever
+    // gameLogic.js itself just appended to state.log (every rule function
+    // logs a human-readable line there already, e.g. "Alice paid $140
+    // rent to Bob") means this one line shows both the mechanical state
+    // transition AND the game-rules-level explanation for it, without
+    // duplicating that explanation here by hand.
+    serverLog('ACTION', code, `p${playerId} <`, type, `${elapsedMs}ms`, `now: phase=${room.state.phase} current=p${room.state.current}${room.state.pendingTrade?' pendingTradeTo=p'+room.state.pendingTrade.toId:''}${room.state.paused?' PAUSED':''}`, '| log:', room.state.log[room.state.log.length-1]);
 
     // A pause action that leaves the room unpaused — either the final
     // unanimous vote just landed, or a stray requestPause no-op'd because
@@ -479,6 +551,7 @@ io.on('connection', (socket) => {
   // live-game seat the same way a disconnect would.
   socket.on('leaveRoom', () => {
     const code = socket.data.roomCode;
+    serverLog('SOCKET', socket.id, 'deliberately left room', {code});
     handleSeatLeave(socket);
     if(code) socket.leave(code);
     socket.data.roomCode = null;
@@ -499,6 +572,7 @@ setInterval(() => {
     if(room.actionableSince == null || room.trackedActingPlayerId == null) continue;
     if(now - room.actionableSince < AFK_TIMEOUT_MS) continue;
 
+    serverLog('AFK', code, `forfeiting p${room.trackedActingPlayerId}`, {idleMs: now - room.actionableSince});
     gameLogic.setState(room.state);
     gameLogic.forfeitPlayer(room.trackedActingPlayerId);
     room.state = gameLogic.getState();

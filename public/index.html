@@ -2718,10 +2718,70 @@ function setPanelPlacement(panelId, value){
 
 buildLayout();
 
+// Every client-side debug log goes through this so devtools shows a
+// consistent, greppable [tag] prefix plus a millisecond timestamp — the
+// timestamp matters for lining up client-side events against server logs
+// (see server.js's own serverLog) when chasing a timing/race-condition
+// bug, since the browser's clock and Render's log-viewer clock aren't the
+// same clock. Deliberately just console.log, not a UI element — this is
+// for reading back in devtools (or via an automated read_console_messages
+// pass) while bug-hunting, not something a normal player should see.
+function clientLog(tag, ...args){
+  console.log(`[${new Date().toISOString()}] [${tag}]`, ...args);
+}
+
+// Anything that would otherwise fail silently (a thrown exception inside
+// a render/click handler, an unhandled promise rejection) gets a loud,
+// tagged console entry instead of just vanishing — this is exactly the
+// category of "logical issue" that's hardest to notice from the outside
+// (a click that just does nothing, per the modal/disabled-button case
+// found during the live playtest right before this was added).
+window.addEventListener('error', (e) => {
+  clientLog('JS-ERROR', e.message, 'at', e.filename+':'+e.lineno+':'+e.colno, e.error && e.error.stack);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  clientLog('JS-ERROR', 'unhandled promise rejection:', e.reason);
+});
+
 const socket = io();
 let state = null;
 let myPlayerId = null;
 let myRoomCode = null;
+
+// Socket.io connection lifecycle — the exact category of thing that's
+// invisible unless logged, and the most likely explanation any time a
+// button "does nothing" during a real playtest over real network
+// conditions (dropped connection, slow reconnect, etc.) rather than an
+// actual game-logic bug.
+socket.on('connect', () => clientLog('SOCKET', 'connected', socket.id));
+socket.on('disconnect', (reason) => clientLog('SOCKET', 'disconnected', reason));
+socket.on('connect_error', (err) => clientLog('SOCKET', 'connect_error', err.message));
+socket.io.on('reconnect_attempt', (n) => clientLog('SOCKET', 'reconnect_attempt', n));
+socket.io.on('reconnect', (n) => clientLog('SOCKET', 'reconnected after', n, 'attempt(s)'));
+socket.io.on('reconnect_failed', () => clientLog('SOCKET', 'reconnect_failed — giving up'));
+
+// Every outgoing game action, logged at the point they actually leave the
+// browser (not at each of the ~100 individual call sites that build
+// {type, args} — wrapping the one shared emit path here covers all of
+// them without touching every function). Mirrors server.js's own
+// serverLog('ACTION', ...) of the same event on arrival, so the two logs
+// can be diffed to see exactly how long an action took to land, or
+// whether it arrived at all. Includes a trimmed call-site stack (which
+// onclick/handler actually triggered this send) — the top frame is
+// always this wrapper itself, so it's dropped; the next couple of frames
+// are the actual UI code, which matters when the same action type can be
+// sent from more than one place (e.g. playCard from both the hand-list
+// thumbnail and the detail-modal Play button).
+const _rawSocketEmit = socket.emit.bind(socket);
+socket.emit = function(event, ...emitArgs){
+  const callSite = (new Error().stack || '').split('\n').slice(2, 5).join('\n');
+  if(event === 'action' && emitArgs[0]){
+    clientLog('ACTION >', emitArgs[0].type, emitArgs[0].args || '', '\n  called from:\n'+callSite);
+  } else if(event !== 'action'){
+    clientLog('EMIT >', event, emitArgs[0] !== undefined ? emitArgs[0] : '', '\n  called from:\n'+callSite);
+  }
+  return _rawSocketEmit(event, ...emitArgs);
+};
 
 // ============================================================
 // Reconnect on reload — sessionStorage (not localStorage) is
@@ -3031,6 +3091,7 @@ socket.on('joined', ({ playerId, roomCode, reconnectToken }) => {
 // good — room's gone, or the token didn't match. Give up on it and show
 // the normal join form instead of leaving the page stuck blank.
 socket.on('rejoinFailed', (msg) => {
+  clientLog('SOCKET', 'rejoin failed:', msg);
   clearSession();
   showJoinScreen(msg);
 });
@@ -3045,6 +3106,11 @@ socket.on('liveRoomJoinOptions', (options) => {
 });
 
 socket.on('errorMsg', (msg) => {
+  // This is exactly the "action rejected" signal — the server-side
+  // ACTION log (serverLog in server.js) will show the same rejection
+  // with its actual reason (not your turn, paused, etc.); this is the
+  // client-visible half of that same event.
+  clientLog('REJECTED', msg);
   const el = document.getElementById('joinError');
   if(el) el.textContent = msg;
   const liveEl = document.getElementById('liveJoinError');
@@ -3061,6 +3127,7 @@ socket.on('errorMsg', (msg) => {
 let lobby = null;
 
 socket.on('lobbyState', (l) => {
+  clientLog('LOBBY <', l.players.length+'/'+l.numPlayers+' players', 'ready='+l.players.filter(p=>p.ready).length);
   lobby = l;
   document.getElementById('joinScreen').style.display = 'none';
   document.getElementById('lobbyScreen').style.display = 'block';
@@ -3151,6 +3218,22 @@ function leaveLobby(){
 }
 
 socket.on('state', (s) => {
+  // Verbose on purpose (every broadcast, not just notable ones) — this is
+  // the exact stream needed to reconstruct a race condition after the
+  // fact: per-player money/position (so a rent payment or a teleport
+  // shows up even if the phase/current didn't change), the doubles/reveal/
+  // trade flags that gate what buttons are even clickable right now, and
+  // the tail of state.log (gameLogic.js's own human-readable narration of
+  // whatever just happened) so this one line explains both the mechanical
+  // state AND the rule-level reason for it.
+  clientLog('STATE <',
+    'phase='+s.phase, 'current=p'+s.current, 'myTurn='+(s.current===myPlayerId),
+    s.pendingTrade ? 'pendingTradeTo=p'+s.pendingTrade.toId : '',
+    s.doubleBonus ? 'doubleBonus' : '', s.pendingReveal ? 'pendingReveal' : '', s.paused ? 'PAUSED' : '',
+    s.suddenDeath ? 'SUDDEN_DEATH' : '',
+    '\n  players:', s.players.map(p=>`p${p.id} ${p.name}: $${p.money}${p.bankrupt?' BANKRUPT':''}${p.disconnected?' DISCONNECTED':''} pos=${p.position} hand=${p.hand.length}`).join(' | '),
+    '\n  log:', s.log[s.log.length-1]);
+
   if(lobby){
     // First real game state — the host just started the game. Switch
     // from the lobby overlay to the actual board.
