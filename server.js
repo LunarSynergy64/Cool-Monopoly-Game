@@ -192,7 +192,7 @@ const TURN_GATED = new Set([
   'distributeUnoReverseRent','flipCoinsForDriveByCoin','resolveDriveByCoinOutcome',
   'chooseTeleportOtherDestination','assignGiveawayCard',
   'chooseHalfChoosingValue','flipCoinsForGamblingNight','resolveGamblingNightOutcome',
-  'performReroll', 'chooseGoAbility',
+  'performReroll', 'chooseGoAbility', 'chooseLuckyDuckFlips',
   'acknowledgeFreeloProperty',
   'buyProperty','skipBuy','stealMortgagedProperty','skipSteal',
   'buyHouse','sellHouse','placeVampireHouse','mortgageProperty','unmortgageProperty',

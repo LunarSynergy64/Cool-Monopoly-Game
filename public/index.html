@@ -43,6 +43,23 @@
     padding:2px;
     border-radius:8px;
   }
+  /* "Enlarge Board" toggle — sized off viewport width (not vmin) so it
+     reliably fills the screen horizontally regardless of aspect ratio,
+     same corner:side ratio (84:48 = 1.75) as the normal size just scaled
+     up. .layout is a flex-wrap row, so once .board alone is wider than
+     what's left for the sidebars, they naturally wrap onto their own line
+     below it — no separate "push everything down" logic needed, this is
+     the same reflow that already happens on a narrow window. The page's
+     own scrollbar handles seeing the rest of the UI below; no extra
+     scroll container needed since body has no fixed height. */
+  .board.board-enlarged{
+    grid-template-columns: 13.5vw repeat(9, 7.7vw) 13.5vw;
+    grid-template-rows: 13.5vw repeat(9, 7.7vw) 13.5vw;
+  }
+  .board.board-enlarged .space{ font-size:16px; padding:6px; }
+  .board.board-enlarged .space .price{ font-size:13px; }
+  .board.board-enlarged .token{ width:56px; height:56px; }
+  .board.board-enlarged .token.token-fallback{ width:28px; height:28px; }
   .space{
     background:var(--panel);
     border-radius:3px;
@@ -117,6 +134,19 @@
     width:32px; height:32px;
     position:absolute;
     display:flex; align-items:flex-end; justify-content:center;
+    /* Above the house/hotel badge (.space's build-count div, z-index:1) —
+       previously unset (z-index:auto), so a tile's own house/hotel count
+       could paint over a token standing on it and partly hide the piece. */
+    z-index:2;
+  }
+  /* Ownership tint — a translucent wash of the owner's player color over
+     the tile's own art/background, sitting above the .art layer (z-index:0)
+     but below the name/price/color-bar/house-badge text (z-index:1), same
+     "insert after art, before everything else" trick those already use
+     rather than needing a distinct numeric slot of its own. */
+  .owner-tint{
+    position:absolute; inset:0; z-index:0;
+    pointer-events:none;
   }
   .token img{ width:100%; height:100%; object-fit:contain; display:block; }
   .token.token-fallback{
@@ -374,6 +404,10 @@
 <button id="pauseToggleBtn" class="pause-exempt" onclick="requestPauseGame()" style="display:none; position:fixed; top:14px; right:96px; z-index:900; background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; padding:6px 10px; font-size:12px; cursor:pointer;">⏸️ Pause</button>
 
 <div id="pauseBanner" class="pause-exempt" style="display:none; position:fixed; top:0; left:0; right:0; z-index:2000; background:#3a2e14; border-bottom:2px solid #c9932f; color:#f0d9a8; padding:10px 16px; text-align:center; font-size:13px;"></div>
+
+<div style="margin-bottom:8px;">
+  <button id="boardSizeToggleBtn" onclick="toggleBoardSize()" style="background:#2c333b; color:#9aa4af; border:1px solid #444; border-radius:6px; padding:6px 10px; font-size:12px; cursor:pointer;">🔍 Enlarge Board</button>
+</div>
 
 <div class="layout">
   <div class="board" id="board">
@@ -1001,6 +1035,13 @@ function findOwner(position){
 let openDetailTarget = null; // {type:'card', index} | {type:'property', pos} | null
 let openPlayerDetail = null; // playerId of the expanded row in the player list, or null
 
+// Lucky Duck's per-coin H/T picks, built up locally across several clicks
+// before being submitted as one array — see the 'choosing-luckyduck-flips'
+// phase in renderTurnBox. Reset to an all-null array of the right length
+// the first time that phase is rendered (see below), so a stale array from
+// a previous flip (different length) never lingers into this one.
+let luckyDuckFlipChoices = null;
+
 function openDetailModal(html, wide){
   const content = document.getElementById('detailModalContent');
   content.innerHTML = html;
@@ -1048,7 +1089,15 @@ function showCardDetail(handIndex){
   html += `<div class="detail-title">${card.name}</div>`;
   html += `<div class="detail-desc">${card.desc}</div>`;
   if(locked){
-    const lockMsg = card.type==='builder' ? '🔒 Reach a monopoly to unlock' : rentThiefUnusable ? '🔒 Needs 3+ active players' : '🔒 Reach Free Parking to unlock';
+    // Stunned checked first — it's the one lock reason that applies to
+    // EVERY card type at once (see game-logic.js's own playCard guard),
+    // so it needs to override the type-specific messages below or a
+    // Stunned player would see e.g. a teleport-family card claim it's
+    // still waiting on Free Parking even after they'd already reached
+    // it, which is exactly what was reported as "GO re-locks teleport
+    // cards" — the real cause was Stunned, not reachedFreeParking ever
+    // resetting (it never does).
+    const lockMsg = player.stunnedActive ? '🔒 Stunned this turn — no cards can be played' : card.type==='builder' ? '🔒 Reach a monopoly to unlock' : rentThiefUnusable ? '🔒 Needs 3+ active players' : '🔒 Reach Free Parking to unlock';
     html += `<div style="font-size:11px;color:var(--danger);margin-bottom:8px;">${lockMsg}</div>`;
   }
   if(rentThiefUnusable){
@@ -1110,7 +1159,22 @@ function propertyDetailHtml(pos){
     const levelLabel = isMortgaged ? 'Mortgaged — no rent' : houseLevelLabel(level);
     html += rentTableHtml(space, level);
     html += `<div class="detail-desc">${levelLabel}</div>`;
-    const canBuild = isMyTurn && !isMortgaged && level<maxBuildLevelFor(player) && level<=groupMinLevel(player,space.color) && state.phase!=='awaiting-buy' && !player.stunnedActive;
+    // Vampire's Squatting lets them build up to level 2 on a property they
+    // own WITHOUT the full color set — this branch previously always used
+    // the full-set "build evenly" logic (groupMinLevel/maxBuildLevelFor)
+    // regardless of whether they actually owned the set. groupMinLevel
+    // computes its minimum across every position in the color group,
+    // defaulting any position the player doesn't own to 0 houses — so for
+    // a Squatting player who owns just this one property, the "rest of
+    // the set" always reads as stuck at 0, and the very first house built
+    // (level 0→1) made `level <= groupMinLevel` (1 <= 0) false forever
+    // after, silently disabling the Build button for good. The
+    // railroad/utility branch just below already gets this right; this
+    // mirrors it.
+    const ownsFullSet = ownsFullColorGroup(player, pos);
+    const squatting = hasAbility(player,'vampire');
+    const canBuild = isMyTurn && !isMortgaged && state.phase!=='awaiting-buy' && !player.stunnedActive
+      && (ownsFullSet ? (level<maxBuildLevelFor(player) && level<=groupMinLevel(player,space.color)) : (squatting && level<2));
     const canSell = isMyTurn && level>0 && state.phase!=='awaiting-buy' && !player.stunnedActive;
     const sellRefund = Math.floor(space.houseCost/2);
     html += `<div class="btn-row">
@@ -1192,6 +1256,18 @@ function toggleCollapse(id){
   if(arrow) arrow.textContent = el.classList.contains('collapsed') ? '▸' : '▾';
 }
 
+// Quick "see the whole board big" toggle — purely visual/local, not saved
+// across reloads, not synced to other players (everyone controls their own
+// view). .board-enlarged does all the actual work via CSS (see its rule
+// above .board); this just flips the class and swaps the button's own
+// label so it's obvious which state you're in and how to get back.
+let boardEnlarged = false;
+function toggleBoardSize(){
+  boardEnlarged = !boardEnlarged;
+  document.getElementById('board').classList.toggle('board-enlarged', boardEnlarged);
+  document.getElementById('boardSizeToggleBtn').textContent = boardEnlarged ? '🔎 Shrink Board' : '🔍 Enlarge Board';
+}
+
 function gridPos(pos){
   // returns {row, col} on the 11x11 grid, see design notes
   if(pos<=9) return {row:11, col:11-pos};
@@ -1225,6 +1301,18 @@ function renderBoard(){
     art.src = 'textures/' + i + '-' + propertySlug(space.name) + '.png';
     art.onerror = function(){ this.remove(); el.classList.remove('has-art'); };
     el.appendChild(art);
+    // Ownership tint — a translucent wash of the owner's player color over
+    // the whole tile, on top of "who owns this" being obvious at a glance
+    // across a full board without having to read the thin outline border
+    // (still kept below) or click in for details.
+    const boardOwner = findOwner(i);
+    if(boardOwner){
+      const tint = document.createElement('div');
+      tint.className = 'owner-tint';
+      tint.style.background = boardOwner.color;
+      tint.style.opacity = '0.32';
+      el.appendChild(tint);
+    }
     if(space.color){
       const bar = document.createElement('div');
       bar.className='color-bar';
@@ -1247,7 +1335,7 @@ function renderBoard(){
       amountEl.textContent = '$'+state.freeParkingPot;
       el.appendChild(amountEl);
     }
-    const owner = findOwner(i);
+    const owner = boardOwner;
     if(owner){
       el.style.outline = '2px solid '+owner.color;
       const level = owner.houses[i] || 0;
@@ -1357,6 +1445,13 @@ function renderTurnBox(){
   if(!box) return;
   const player = currentPlayer();
 
+  // Your own money, front and center above everything else in this panel
+  // (not just tucked into the Players tab) — same figure every render,
+  // regardless of whose turn it actually is or what phase things are in.
+  const myMoneyHtml = state.players[myPlayerId]
+    ? '<div style="font-size:18px; font-weight:800; color:var(--accent); margin-bottom:8px;">💰 $'+state.players[myPlayerId].money+'</div>'
+    : '';
+
   // While a token is mid-walk (see animateTokenMove/socket.on('state',...)
   // below), every connected client shows a generic "Moving…" state instead
   // of whatever the resulting phase's UI would be (a buy prompt, etc.) —
@@ -1367,7 +1462,7 @@ function renderTurnBox(){
   // server-side before this broadcast arrived).
   if(tokenAnimation){
     const animPlayer = state.players[tokenAnimation.playerId];
-    let movingHtml = '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+animPlayer.name+"'s Turn</div>";
+    let movingHtml = myMoneyHtml + '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+animPlayer.name+"'s Turn</div>";
     if(state.lastDice){
       movingHtml += '<div class="dice">🎲 '+state.lastDice.join(' + ')+'</div>';
     }
@@ -1381,14 +1476,14 @@ function renderTurnBox(){
     : '';
 
   if(myPlayerId !== state.current){
-    box.innerHTML = suddenDeathBanner
+    box.innerHTML = myMoneyHtml + suddenDeathBanner
       + '<div style="font-weight:700; color:var(--accent); margin-bottom:6px;">'+player.name+"'s Turn</div>"
       + '<div style="font-size:12.5px; color:var(--text-dim);">Waiting for '+player.name+' to play...</div>'
       + afkIndicatorHtml();
     return;
   }
 
-  let html = suddenDeathBanner + '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+player.name+"'s Turn</div>";
+  let html = myMoneyHtml + suddenDeathBanner + '<div style="font-weight:700; color:var(--accent); margin-bottom:4px;">'+player.name+"'s Turn</div>";
   if(player.pendingNotifications && player.pendingNotifications.length > 0){
     html += '<div style="background:var(--panel-2); border-left:3px solid var(--accent); border-radius:4px; padding:6px 8px; margin-bottom:8px;">';
     html += player.pendingNotifications.map(n=>'<div style="font-size:12px; margin:2px 0;">🔔 '+n+'</div>').join('');
@@ -1423,6 +1518,25 @@ function renderTurnBox(){
     html += '<div style="font-size:13px;margin-bottom:8px;">Small Moves: use your bonus move '+(dir>0?'forward':'backward')+' 1 space before landing?</div>';
     html += '<button class="buy" onclick="confirmSmallMove(true)">Yes, move '+(dir>0?'+1':'-1')+'</button>';
     html += '<button class="skip" onclick="confirmSmallMove(false)">No, stay put</button>';
+  } else if(state.phase === 'choosing-luckyduck-flips'){
+    // Lucky Duck's whole point here: real per-coin control instead of the
+    // game silently forcing every flip to whichever side it assumed was
+    // "favorable" — that assumption was wrong for Small Moves specifically
+    // (forward isn't always the safer direction), so now every flip they
+    // trigger is a direct choice, not a guess on their behalf.
+    const count = state.pendingLuckyDuckFlip.count;
+    if(!luckyDuckFlipChoices || luckyDuckFlipChoices.length !== count) luckyDuckFlipChoices = Array(count).fill(null);
+    html += '<div style="font-size:13px;margin-bottom:8px;">🍀 Lucky Duck — choose Heads or Tails for each of your '+count+' coin'+(count>1?'s':'')+':</div>';
+    for(let i=0;i<count;i++){
+      const chosen = luckyDuckFlipChoices[i];
+      html += '<div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;">';
+      html += '<span style="font-size:11px; color:var(--text-dim); width:52px;">Coin '+(i+1)+':</span>';
+      html += '<button class="'+(chosen==='H'?'buy':'secondary')+'" style="flex:1; padding:5px;" onclick="setLuckyDuckFlip('+i+',\'H\')">Heads</button>';
+      html += '<button class="'+(chosen==='T'?'buy':'secondary')+'" style="flex:1; padding:5px;" onclick="setLuckyDuckFlip('+i+',\'T\')">Tails</button>';
+      html += '</div>';
+    }
+    const allChosen = luckyDuckFlipChoices.every(c=>c==='H'||c==='T');
+    html += '<button class="buy" '+(allChosen?'':'disabled')+' onclick="submitLuckyDuckFlips()">Confirm</button>';
   } else if(state.phase === 'choosing-target'){
     const pending = state.pendingCardPlay;
     const excludeSelf = pending.card.type === 'switch' || pending.card.type === 'lottery'
@@ -2097,6 +2211,10 @@ function renderPlayers(){
   const orderedPlayers = (state.turnOrder || state.players.map(p=>p.id)).map(id => state.players[id]);
   list.innerHTML = orderedPlayers.map((p)=>{
     const props = p.owned.length;
+    const pieceDef = PIECE_DEFS.find(pd=>pd.id===p.piece);
+    const pieceBadge = pieceDef
+      ? `<img src="${pieceDef.image}" title="${pieceDef.name}" style="height:18px;vertical-align:middle;margin:0 4px;" onerror="this.style.display='none'">`
+      : '';
     const abilities = (p.abilities||[]).map(id=>ABILITY_DEFS.find(a=>a.id===id)).filter(Boolean);
     const abilityBadge = abilities.length
       ? abilities.map(ability=>{
@@ -2135,7 +2253,7 @@ function renderPlayers(){
         : 'None yet — granted on passing GO.'}</div>
     </div>` : '';
     return `<div class="player-row ${p.id===state.current?'active':''}" style="cursor:pointer;" onclick="togglePlayerDetail(${p.id})">
-      <span><span class="swatch" style="background:${p.color}"></span>${p.name}${p.id===myPlayerId?' (you)':''}${p.bankrupt?' (bankrupt)':''}${p.disconnected?' (disconnected)':''}${abilityBadge}</span>
+      <span><span class="swatch" style="background:${p.color}"></span>${p.name}${p.id===myPlayerId?' (you)':''}${p.bankrupt?' (bankrupt)':''}${p.disconnected?' (disconnected)':''}${pieceBadge}${abilityBadge}</span>
       <span>$${p.money} · ${props} propert${props===1?'y':'ies'}</span>
     </div>${detail}`;
   }).join('');
@@ -2295,7 +2413,7 @@ function showAbilityDetailStatic(abilityId){
 function boardSpaceJailHtml(){
   let html = `<img src="${boardTextureSrc(10)}" onerror="this.remove()">`;
   html += `<div class="detail-title">Jail</div>`;
-  html += `<div class="detail-desc">Just landing here while passing by is a free visit — nothing happens. Players actually sent to Jail (via the Go To Jail space, a card, or 3 doubles in a row) stay for up to 2 full turns and are automatically released at the start of their 3rd turn. Rolling doubles on a jail turn breaks them out immediately and moves them that amount. A Get Out of Jail Free card or the Jail Break card can also release them early.</div>`;
+  html += `<div class="detail-desc">Just landing here while passing by is a free visit — nothing happens. Players actually sent to Jail (via the Go To Jail space, a card, or 3 doubles in a row) get up to 3 roll attempts to break out on doubles, and are automatically released once the third attempt fails too. Rolling doubles on any jail turn breaks them out immediately and moves them that amount. A Get Out of Jail Free card or the Jail Break card can also release them early.</div>`;
   html += `<div class="detail-desc">🔒 While in jail: no rolling to move normally, no trading, no rent collection on your own properties, no playing hand cards, and no building or selling houses.</div>`;
   const jailed = state.players.filter(p=>p.inJail && !p.bankrupt);
   if(jailed.length){
@@ -3327,6 +3445,16 @@ function rollDice(){ socket.emit('action', {type:'rollDice'}); }
 function rollAgain(){ socket.emit('action', {type:'rollAgain'}); }
 function skipRoll(){ socket.emit('action', {type:'skipRoll'}); }
 function confirmSmallMove(useIt){ socket.emit('action', {type:'confirmSmallMove', args:[useIt]}); }
+function setLuckyDuckFlip(i, side){
+  if(!luckyDuckFlipChoices) return;
+  luckyDuckFlipChoices[i] = side;
+  render();
+}
+function submitLuckyDuckFlips(){
+  if(!luckyDuckFlipChoices || luckyDuckFlipChoices.some(c=>c!=='H'&&c!=='T')) return;
+  socket.emit('action', {type:'chooseLuckyDuckFlips', args:[luckyDuckFlipChoices]});
+  luckyDuckFlipChoices = null;
+}
 function playCard(cardIndex){ socket.emit('action', {type:'playCard', args:[cardIndex]}); }
 function chooseTeleportDestination(pos){ socket.emit('action', {type:'chooseTeleportDestination', args:[pos]}); }
 function chooseCardTarget(targetId){ socket.emit('action', {type:'chooseCardTarget', args:[targetId]}); }

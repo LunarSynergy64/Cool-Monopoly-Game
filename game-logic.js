@@ -71,6 +71,26 @@ function houseLevelLabel(level){
   return label;
 }
 
+// Single source of truth for "how many plain houses / hotels does this
+// player have on the board right now" — same level math as
+// rentFor/houseLevelLabel above (every full multiple of 5 on a given
+// property is a Hotel, the 1-4 remainder on top is that many separate
+// houses), just totaled across every property they own instead of
+// describing one. Built for the classic Chance/Community Chest "general
+// repairs"/"street repairs" cards, which charge a flat rate per house and
+// a separate flat rate per hotel — those were previously just a
+// TODO/no-op stub ("No effect until houses exist") left over from before
+// the house-building system existed; this is what they draw on now.
+function countHousesAndHotels(player){
+  let houses = 0, hotels = 0;
+  player.owned.forEach(pos=>{
+    const level = player.houses[pos] || 0;
+    hotels += Math.floor(level/5);
+    houses += level % 5;
+  });
+  return { houses, hotels };
+}
+
 // If either property involved has houses on it, they're liquidated at the
 // normal sell-refund rate rather than carried across — the refund goes to
 // whoever owned them a moment ago, not the new owner.
@@ -622,6 +642,48 @@ function creditPlayer(player, amount, reason){
   player.money += amount;
 }
 
+// Symmetric to creditPlayer above, but for the PAYING side of a debt owed
+// to another player (rent, jail fees, etc.) — real Monopoly rule: you
+// can't go into debt. Caps what actually leaves the payer's balance at
+// whatever they actually have, pays the collector only that capped
+// amount (never the full amount owed if the payer couldn't cover it —
+// previously every rent-paying function just did `payer.money -= rent`
+// unconditionally, so a player with $100 landing on a $1000 rent would
+// pay the full $1000 and go to -$900, and the owner would be credited
+// the full $1000 the payer never actually had), and — if that wasn't
+// enough to cover the full amount — immediately triggers bankruptcy for
+// the shortfall via the existing checkBankrupt path rather than leaving
+// them to keep playing (and owing even more) on a later turn. Deducts
+// the shortfall from payer.money right before calling checkBankrupt so
+// its existing `player.money < 0` trigger, and Lucky Duck's
+// deficit-clawback math (`-player.money`), both still see the exact
+// true shortfall, unchanged from before this helper existed —
+// checkBankrupt itself zeroes player.money back to a clean $0 once it's
+// done with it, for both the revival and the real-bankruptcy paths.
+//
+// collectorIsKiller defaults to true (matching every existing rent-style
+// call site, which already passed the collector through as checkBankrupt's
+// killer param before this helper existed) — pass false for non-rent
+// forced payments (card effects like Coin Flip Steal, bank-owed tax/fees,
+// multi-player payouts) where the collector is still owed the money but
+// shouldn't inherit the payer's hand/houses on bankruptcy the way an
+// actual rent-collecting landlord does; checkBankrupt's own killer
+// comment already establishes that convention — "only rent payments have
+// one of these" — this parameter just lets chargePlayer's shared capping
+// logic serve both cases instead of only the rent-shaped one.
+function chargePlayer(payer, amount, collector, reason, collectorIsKiller){
+  if(collectorIsKiller === undefined) collectorIsKiller = true;
+  const paid = Math.min(amount, Math.max(0, payer.money));
+  const shortfall = amount - paid;
+  payer.money -= paid;
+  if(collector) creditPlayer(collector, paid, reason);
+  if(shortfall > 0 && !payer.bankrupt){
+    payer.money -= shortfall;
+    checkBankrupt(payer, collectorIsKiller ? collector : undefined, true);
+  }
+  return paid;
+}
+
 const RAILROAD_POSITIONS = [5,15,25,35];
 
 function nearestRailroad(pos){
@@ -737,13 +799,20 @@ const CHANCE_DECK = [
   {text:'Get Out of Jail Free. This card is kept until needed.', apply(p){ p.getOutOfJailFree = (p.getOutOfJailFree||0)+1; }},
   {text:'Go back 3 spaces.', apply(p){ moveBy(p,-3); }},
   {text:'Go to Jail. Do not pass GO, do not collect $200.', apply(p){ sendToJail(p); }},
-  {text:'Make general repairs on all your property: $25 per house, $100 per hotel. (No effect until houses exist.)', apply(p){ /* TODO: wire up once houses/hotels are implemented */ }},
-  {text:'Pay a speeding fine of $15.', apply(p, state){ p.money -= 15; state.freeParkingPot += 15; }},
+  {text:'Make general repairs on all your property: $25 per house, $100 per hotel.', apply(p, state){
+    const {houses, hotels} = countHousesAndHotels(p);
+    const amount = houses*25 + hotels*100;
+    if(amount <= 0){ log(p.name+' has no houses or hotels — no repairs owed.'); return; }
+    const paid = chargePlayer(p, amount, null, 'general repairs');
+    state.freeParkingPot += paid;
+    log(p.name+' owes $'+amount+' for general repairs ('+houses+' house'+(houses===1?'':'s')+', '+hotels+' hotel'+(hotels===1?'':'s')+')'+(paid<amount?' — could only pay $'+paid+' and goes bankrupt.':'.'));
+  }},
+  {text:'Pay a speeding fine of $15.', apply(p, state){ state.freeParkingPot += chargePlayer(p, 15, null, 'speeding fine'); }},
   {text:'Take a trip to Reading Railroad. If you pass GO, collect $200.', apply(p){ advanceTo(p,5); }},
   {text:'Advance to Boardwalk.', apply(p){ advanceTo(p,39); }},
   {text:'You have been elected Chairman of the Board. Pay each player $50.', apply(p, state){
     state.players.forEach(other=>{
-      if(other!==p && !other.bankrupt){ p.money -= 50; creditPlayer(other, 50, 'Chairman of the Board'); }
+      if(other!==p && !other.bankrupt) chargePlayer(p, 50, other, 'Chairman of the Board', false);
     });
   }},
   {text:'Your building loan matures. Collect $150.', apply(p){ p.money += 150; }},
@@ -752,22 +821,29 @@ const CHANCE_DECK = [
 const CHEST_DECK = [
   {text:'Advance to GO. Collect $200.', apply(p){ advanceTo(p,0); }},
   {text:'Bank error in your favor. Collect $200.', apply(p){ p.money += 200; }},
-  {text:"Doctor's fee. Pay $50.", apply(p, state){ p.money -= 50; state.freeParkingPot += 50; }},
+  {text:"Doctor's fee. Pay $50.", apply(p, state){ state.freeParkingPot += chargePlayer(p, 50, null, "doctor's fee"); }},
   {text:'From sale of stock you get $50.', apply(p){ p.money += 50; }},
   {text:'Get Out of Jail Free. This card is kept until needed.', apply(p){ p.getOutOfJailFree = (p.getOutOfJailFree||0)+1; }},
   {text:'Go to Jail. Do not pass GO, do not collect $200.', apply(p){ sendToJail(p); }},
   {text:'Grand Opera Night. Collect $50 from every player for opening night seats.', apply(p, state){
     state.players.forEach(other=>{
-      if(other!==p && !other.bankrupt){ other.money -= 50; creditPlayer(p, 50, 'Grand Opera Night'); }
+      if(other!==p && !other.bankrupt) chargePlayer(other, 50, p, 'Grand Opera Night', false);
     });
   }},
   {text:'Holiday Fund matures. Receive $100.', apply(p){ p.money += 100; }},
   {text:'Income tax refund. Collect $20.', apply(p){ p.money += 20; }},
   {text:'Life insurance matures. Collect $100.', apply(p){ p.money += 100; }},
-  {text:'Hospital fees. Pay $100.', apply(p, state){ p.money -= 100; state.freeParkingPot += 100; }},
-  {text:'School fees. Pay $50.', apply(p, state){ p.money -= 50; state.freeParkingPot += 50; }},
+  {text:'Hospital fees. Pay $100.', apply(p, state){ state.freeParkingPot += chargePlayer(p, 100, null, 'hospital fees'); }},
+  {text:'School fees. Pay $50.', apply(p, state){ state.freeParkingPot += chargePlayer(p, 50, null, 'school fees'); }},
   {text:'Receive $25 consultancy fee.', apply(p){ p.money += 25; }},
-  {text:'You are assessed for street repairs: $40 per house, $115 per hotel. (No effect until houses exist.)', apply(p){ /* TODO: wire up once houses/hotels are implemented */ }},
+  {text:'You are assessed for street repairs: $40 per house, $115 per hotel.', apply(p, state){
+    const {houses, hotels} = countHousesAndHotels(p);
+    const amount = houses*40 + hotels*115;
+    if(amount <= 0){ log(p.name+' has no houses or hotels — no repairs owed.'); return; }
+    const paid = chargePlayer(p, amount, null, 'street repairs');
+    state.freeParkingPot += paid;
+    log(p.name+' owes $'+amount+' for street repairs ('+houses+' house'+(houses===1?'':'s')+', '+hotels+' hotel'+(hotels===1?'':'s')+')'+(paid<amount?' — could only pay $'+paid+' and goes bankrupt.':'.'));
+  }},
   {text:'You have won second prize in a beauty contest. Collect $10.', apply(p){ p.money += 10; }},
   {text:'You inherit $100.', apply(p){ p.money += 100; }},
 ];
@@ -849,7 +925,9 @@ function newGame(numPlayers, pieceIds, ruleset){
     suddenDeath: false,
     paused: false, pausedBy: null, unpauseVotes: [],
     ruleset: normalizedRuleset,
-    pendingGoAbilityChoice: null
+    pendingGoAbilityChoice: null,
+    pendingLuckyDuckFlip: null, // { count, resumeFnName } — see beginLuckyDuckFlipChoice
+    luckyDuckChoices: null // ['H','T',...] once submitted, consumed one at a time by flipCoin()
   };
   log('Game started with '+numPlayers+' players.');
   players.forEach(p=>{
@@ -918,17 +996,37 @@ function settleLandingPhase(fallbackPhase){
     const player = state.players[queue.playerId];
     state.oneAtATimeQueue = null;
     if(queue.knockback) applyKnockbackEffect(player, queue.knockback);
-    state.doubleBonus = queue.isDouble && !player.inJail;
+    // !player.bankrupt matters here for the same reason as everywhere
+    // else this is checked — resolveLanding (already run, further up
+    // the call chain that got us here) may have just bankrupted this
+    // player from a rent payment on one of the per-die landings, and
+    // this assignment runs unconditionally afterward, so without the
+    // check it would silently re-offer "Roll Again" to a player who
+    // just went bankrupt mid-turn.
+    state.doubleBonus = queue.isDouble && !player.inJail && !player.bankrupt;
     if(state.doubleBonus){
       player.turnsElapsed = (player.turnsElapsed||0) + 1;
       player.cardsPlayedThisTurn = 0;
       player.upForGrabsBoughtThisTurn = false;
       log(player.name+' rolled doubles and gets to roll again!');
     }
-    state.phase = resolvePendingGoChoicePhase(fallbackPhase);
+    // A hand-size violation set mid-resolution (state.phase === 'trimming-
+    // hand', e.g. Hard Hitter handing a card back into an already-full
+    // hand — see the checkHandTrimming call inside resolveLanding) takes
+    // priority over whatever the landing would normally settle into.
+    // Still calling resolvePendingGoChoicePhase for its side effect (it
+    // stashes fallbackPhase onto a pending ability choice's resumePhase)
+    // so a same-roll "grant an ability" + "hand overflow" collision isn't
+    // lost — just not letting its return value overwrite trimming-hand,
+    // which otherwise discarded the trimming requirement before the
+    // player was ever prompted to discard, leaving them silently over
+    // the hand limit.
+    const resolvedPhase = resolvePendingGoChoicePhase(fallbackPhase);
+    if(state.phase !== 'trimming-hand') state.phase = resolvedPhase;
     return;
   }
-  state.phase = resolvePendingGoChoicePhase(fallbackPhase);
+  const resolvedPhase = resolvePendingGoChoicePhase(fallbackPhase);
+  if(state.phase !== 'trimming-hand') state.phase = resolvedPhase;
 }
 
 // Terminal phase for any landing resolution (dice-roll or card-driven).
@@ -1107,9 +1205,7 @@ function playCard(cardIndex){
     others.forEach(p=>{
       p.inJail = false;
       p.jailTurns = 0;
-      p.money -= 200;
-      creditPlayer(player, 200, 'Jail Break fee');
-      collected += 200;
+      collected += chargePlayer(p, 200, player, 'Jail Break fee', false);
       notify(p, player.name+' used "'+jailBreakCard.name+'" to break you out of Jail — you paid them $200.');
     });
     log(player.name+' played "'+jailBreakCard.name+'" — broke everyone out of Jail'+(others.length>0?' and collected $'+collected+' from '+others.map(p=>p.name).join(', '):' (no one else was in Jail)')+'.');
@@ -1262,9 +1358,16 @@ function playCard(cardIndex){
     player.hand.splice(cardIndex,1);
     state.discardPile.push(card);
     player.cardsPlayedThisTurn = (player.cardsPlayedThisTurn||0) + 1;
-    const heads = flipCoin(player, 'H') === 'H';
-    player.smallMoveDir = heads ? 1 : -1;
-    log(player.name+' played "'+card.name+'" and flipped '+(heads?'Heads (forward)':'Tails (backward)')+' — usable once after this roll.');
+    log(player.name+' played "'+card.name+'".');
+    // The one flip site where "always force heads" actively hurt Lucky
+    // Duck instead of helping — this flip picks a DIRECTION, and forward
+    // isn't always what you want (sometimes backward avoids an expensive
+    // property or lines up a specific landing), unlike every other flip
+    // card where more heads is just strictly better. Card is already
+    // discarded/counted above so resuming after their choice doesn't
+    // redo that part.
+    if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(1, 'resolveSmallMovesFlip'); return; }
+    resolveSmallMovesFlip();
     return;
   }
 
@@ -2062,10 +2165,10 @@ function resolvePassByTraps(player, fromPos, steps, dir){
     const beforeAbilityRent = rent;
     rent = applyRentAbilities(player, owner, rent);
     logRentAbilityNote(player, owner, beforeAbilityRent, rent);
-    player.money -= rent;
-    creditPlayer(owner, rent, 'Pass By rent');
-    log(player.name+' passed '+space.name+' and paid '+Math.round(trap.pct*100)+'% rent ($'+rent+') to '+owner.name+' (Pass By).');
-    checkBankrupt(player, owner);
+    const paid = chargePlayer(player, rent, owner, 'Pass By rent');
+    log(paid < rent
+      ? player.name+' only had $'+paid+' — pays '+owner.name+' everything they had ('+Math.round(trap.pct*100)+'% rent of $'+rent+' owed, Pass By) and goes bankrupt.'
+      : player.name+' passed '+space.name+' and paid '+Math.round(trap.pct*100)+'% rent ($'+rent+') to '+owner.name+' (Pass By).');
   });
 }
 
@@ -2105,6 +2208,7 @@ function flipCoinsForFlipDraw(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'flipdraw') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(3, 'flipCoinsForFlipDraw'); return; }
   pending.flips = [0,1,2].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   log(player.name+' flipped for "'+pending.card.name+'": '+pending.flips.join(', ')+' ('+pending.headsCount+' heads).');
@@ -2125,6 +2229,7 @@ function flipCoinsForDemolisher(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'demolisher') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(3, 'flipCoinsForDemolisher'); return; }
   pending.flips = [0,1,2].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   pending.demolishesRemaining = pending.headsCount;
@@ -2134,6 +2239,43 @@ function flipCoinsForDemolisher(){
 
 // Lets the player pick which opposing property to knock a house off,
 // repeated up to pending.demolishesRemaining times (once per heads).
+// Every other position in the same ownable set as `position` — color
+// group, all 4 railroads, or both utilities — that this specific owner
+// also owns. Mirrors checkBuilderBonus's own railroad/utility grouping
+// rather than just colorGroupPositions, since Demolisher can hit any of
+// the three set types.
+function ownedGroupSiblings(owner, position){
+  const space = SPACES[position];
+  let group;
+  if(space.color) group = colorGroupPositions(space.color);
+  else if(space.type === 'railroad') group = RAILROAD_POSITIONS;
+  else if(space.type === 'utility') group = UTILITY_POSITIONS;
+  else group = [position];
+  return group.filter(pos => owner.owned.includes(pos));
+}
+
+// Real Monopoly rule: a set has to be built (and, by the same logic,
+// knocked down) as evenly as possible — buyHouse already enforces this
+// for the owner's own voluntary building ("Build evenly..."). Demolisher
+// is the owner having houses forcibly removed, so it needs the same
+// discipline in reverse: instead of always draining the exact property
+// clicked (which could leave the rest of the set untouched — e.g. a
+// 2-property set at [3,3] clicked 3 times on the same property used to
+// go to [0,3], wildly uneven), redirect each individual removal to
+// whichever property in that same set CURRENTLY has the most houses.
+// Ties go to the clicked property itself, so if you keep clicking the
+// same one it ends up with the fewest once the set is as even as it can
+// get — matching "the one demolisher was used on" ending up lowest.
+function pickDemolishTarget(owner, clickedPosition){
+  let best = clickedPosition;
+  let bestHouses = owner.houses[clickedPosition] || 0;
+  ownedGroupSiblings(owner, clickedPosition).forEach(pos=>{
+    const h = owner.houses[pos] || 0;
+    if(h > bestHouses){ bestHouses = h; best = pos; }
+  });
+  return best;
+}
+
 function demolishHouse(position){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
@@ -2141,11 +2283,13 @@ function demolishHouse(position){
   if(pending.demolishesRemaining <= 0) return;
   const owner = findOwner(position);
   if(!owner || owner.id === player.id) return; // must be an opponent's property
-  const current = owner.houses[position] || 0;
-  if(current <= 0) return;
-  owner.houses[position] = current - 1;
+  const target = pickDemolishTarget(owner, position);
+  const targetLevel = owner.houses[target] || 0;
+  if(targetLevel <= 0) return; // nothing left anywhere in this set to knock down
+  owner.houses[target] = targetLevel - 1;
   pending.demolishesRemaining -= 1;
-  log(player.name+' used "'+pending.card.name+'" to knock '+(current===5?'a Hotel down to 4 houses':'a house off')+' '+SPACES[position].name+' ('+owner.name+').');
+  log(player.name+' used "'+pending.card.name+'" to knock '+(targetLevel===5?'a Hotel down to 4 houses':'a house off')+' '+SPACES[target].name+' ('+owner.name+')'
+    +(target!==position ? ' — evened out from the set instead of '+SPACES[position].name+'.' : '.'));
   if(pending.demolishesRemaining <= 0){
     state.pendingCardPlay = null;
     state.phase = 'pre-roll';
@@ -2163,6 +2307,7 @@ function flipCoinsForLottery(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'lottery') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(2, 'flipCoinsForLottery'); return; }
   pending.flips = [0,1].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   log(player.name+' flipped for "'+pending.card.name+'": '+pending.flips.join(', ')+' ('+pending.headsCount+' heads).');
@@ -2206,6 +2351,7 @@ function flipCoinsForBuilder(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'builder') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(4, 'flipCoinsForBuilder'); return; }
   pending.flips = [0,1,2,3].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   pending.buildsRemaining = pending.headsCount;
@@ -2308,8 +2454,11 @@ function flipCoinsForSlow(){
   const pending = state.pendingCardPlay;
   if(!pending) return;
   const target = state.players[pending.targetId];
-  // Lucky Duck flipping this: minimize their own penalty if self-targeted,
-  // maximize it against an opponent — either way it favors the flipper.
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(4, 'flipCoinsForSlow'); return; }
+  // favor is just the fallback flipCoin() uses if somehow called with no
+  // queued choices (see flipCoin's own comment) — minimizes their own
+  // penalty if self-targeted, maximizes it against an opponent. The real
+  // path now is the player choosing all 4 directly via chooseLuckyDuckFlips.
   const favor = (target.id === player.id) ? 'H' : 'T';
   const flips = [0,1,2,3].map(() => flipCoin(player, favor));
   const tailsCount = flips.filter(f=>f==='T').length;
@@ -2382,6 +2531,7 @@ function flipCoinsForCustom(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'custom') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(2, 'flipCoinsForCustom'); return; }
   const flips = [0,1].map(() => flipCoin(player, 'H'));
   const headsCount = flips.filter(f=>f==='H').length;
   pending.flips = flips;
@@ -2432,6 +2582,7 @@ function flipCoinsForBonus(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending) return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(3, 'flipCoinsForBonus'); return; }
   pending.flips = [0,1,2].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   log(player.name+' flipped: '+pending.flips.join(', ')+' ('+pending.headsCount+' heads).');
@@ -2450,6 +2601,7 @@ function flipCoinsForDriveByCoin(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'drivebycoin') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(4, 'flipCoinsForDriveByCoin'); return; }
   const flips = [0,1,2,3].map(() => flipCoin(player, 'H'));
   const headsCount = flips.filter(f=>f==='H').length;
   pending.flips = flips;
@@ -2477,6 +2629,7 @@ function flipCoinsForCurse(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending) return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(3, 'flipCoinsForCurse'); return; }
   pending.flips = [0,1,2].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   log(player.name+' flipped: '+pending.flips.join(', ')+' ('+pending.headsCount+' heads).');
@@ -2487,6 +2640,7 @@ function flipCoinsForGamblingNight(){
   const player = currentPlayer();
   const pending = state.pendingCardPlay;
   if(!pending || pending.card.type !== 'gamblingnight') return;
+  if(hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(3, 'flipCoinsForGamblingNight'); return; }
   pending.flips = [0,1,2].map(()=> flipCoin(player, 'H'));
   pending.headsCount = pending.flips.filter(f=>f==='H').length;
   log(player.name+' flipped for "'+pending.card.name+'": '+pending.flips.join(', ')+' ('+pending.headsCount+' heads).');
@@ -2539,9 +2693,11 @@ function resolveCurseOutcome(){
   } else if(pending.headsCount === 0){
     const others = state.players.filter(p=>p.id!==player.id && !p.bankrupt);
     if(others.length === 0){
-      player.money -= 500;
-      state.freeParkingPot += 500;
-      log(player.name+' hit 3 tails but there\'s no one to pay — $500 goes to the Free Parking pot instead.');
+      const paid = chargePlayer(player, 500, null, "Gambler's Curse");
+      state.freeParkingPot += paid;
+      log(paid < 500
+        ? player.name+" hit 3 tails but there's no one to pay — only had $"+paid+" to put toward the Free Parking pot and goes bankrupt."
+        : player.name+' hit 3 tails but there\'s no one to pay — $500 goes to the Free Parking pot instead.');
       state.pendingCardPlay = null;
       state.phase = 'pre-roll';
     } else {
@@ -2564,9 +2720,22 @@ function distributeCurseLoss(amounts){
     log('Distribution must add up to exactly $500 (currently $'+total+').');
     return;
   }
-  player.money -= 500;
-  others.forEach(p=>{ creditPlayer(p, amounts[p.id], "Gambler's Curse payout"); });
-  log(player.name+' distributed the $500 loss: '+others.map(p=>p.name+' $'+amounts[p.id]).join(', ')+'.');
+  // Scale every recipient's cut down proportionally if the player can't
+  // actually cover the full $500 they chose to split — same "pay what
+  // you actually have" principle as chargePlayer, just applied across
+  // several recipients at once instead of one, since there's no single
+  // collector here to hand the shortfall logic off to directly.
+  const totalPaid = Math.min(500, Math.max(0, player.money));
+  const ratio = totalPaid / 500;
+  player.money -= totalPaid;
+  others.forEach(p=>{ creditPlayer(p, Math.floor((amounts[p.id]||0) * ratio), "Gambler's Curse payout"); });
+  log(totalPaid < 500
+    ? player.name+" could only cover $"+totalPaid+" of the $500 Gambler's Curse loss — pays everyone what's left, scaled down, and goes bankrupt."
+    : player.name+' distributed the $500 loss: '+others.map(p=>p.name+' $'+amounts[p.id]).join(', ')+'.');
+  if(totalPaid < 500 && !player.bankrupt){
+    player.money -= (500 - totalPaid);
+    checkBankrupt(player, undefined, true);
+  }
   state.pendingCardPlay = null;
   state.phase = 'pre-roll';
 }
@@ -2576,6 +2745,12 @@ function flipCoinsForSteal(){
   const pending = state.pendingCardPlay;
   if(!pending) return;
   const numCoins = player.owned.filter(pos => !player.mortgaged[pos]).length;
+  // Unlike every other flip site, this one's coin count is dynamic (one
+  // per unmortgaged property) rather than a fixed card-defined number —
+  // only worth pausing for a choice if there's actually at least one coin
+  // to choose; numCoins===0 falls straight through to the (already empty)
+  // flips array same as before.
+  if(numCoins > 0 && hasAbility(player,'luckyduck') && !state.luckyDuckChoices){ beginLuckyDuckFlipChoice(numCoins, 'flipCoinsForSteal'); return; }
   const flips = Array.from({length:numCoins}, () => flipCoin(player, 'H'));
   const headsCount = flips.filter(f=>f==='H').length;
   pending.flips = flips;
@@ -2591,12 +2766,8 @@ function resolveCoinStealOutcome(){
   const amountEach = pending.headsCount * 50;
   if(amountEach > 0){
     const others = state.players.filter(p => p.id!==player.id && !p.bankrupt && !p.inJail);
-    others.forEach(p=>{
-      p.money -= amountEach;
-      creditPlayer(player, amountEach, 'Coin Flip Steal');
-    });
-    log(player.name+' collected $'+amountEach+' each from '+(others.map(p=>p.name).join(', ')||'no one')+' via Coin Flip Steal.');
-    others.forEach(p=>checkBankrupt(p));
+    others.forEach(p=>{ chargePlayer(p, amountEach, player, 'Coin Flip Steal', false); });
+    log(player.name+' collected up to $'+amountEach+' each from '+(others.map(p=>p.name).join(', ')||'no one')+' via Coin Flip Steal.');
   } else {
     log('Coin Flip Steal had no effect this time.');
   }
@@ -2662,10 +2833,10 @@ function payHalfRent(payer, owner, space){
   rent = applyRentAbilities(payer, owner, rent);
   logRentAbilityNote(payer, owner, beforeAbilityRent, rent);
 
-  payer.money -= rent;
-  creditPlayer(owner, rent, 'rent');
-  log(payer.name+' paid half rent of $'+rent+' to '+owner.name+' (warp card).');
-  checkBankrupt(payer, owner);
+  const paid = chargePlayer(payer, rent, owner, 'rent');
+  log(paid < rent
+    ? payer.name+' only had $'+paid+' — pays '+owner.name+' everything they had (half rent of $'+rent+' owed, warp card) and goes bankrupt.'
+    : payer.name+' paid half rent of $'+rent+' to '+owner.name+' (warp card).');
 }
 
 function markFreeParkingProgress(player, fromPos, toPos, steps, dir){
@@ -2792,7 +2963,13 @@ function finishMovementFlow(player, pending){
     extensionUsed = true;
   }
 
-  state.doubleBonus = (isDouble || extensionUsed) && !player.inJail;
+  // !player.bankrupt matters here for the same reason as everywhere else
+  // this is checked — resolveLanding just above may have bankrupted this
+  // player from a rent payment, and this assignment runs unconditionally
+  // afterward, so without the check a player who rolled doubles into a
+  // rent they couldn't cover would still get offered "Roll Again" after
+  // going bankrupt mid-turn.
+  state.doubleBonus = (isDouble || extensionUsed) && !player.inJail && !player.bankrupt;
   if(state.doubleBonus){
     player.turnsElapsed = (player.turnsElapsed||0) + 1;
     player.cardsPlayedThisTurn = 0;
@@ -2801,12 +2978,82 @@ function finishMovementFlow(player, pending){
   }
 }
 
-// Lucky Duck: any coin flip the ability holder personally triggers resolves
-// favorably for them, whether that flip helps them directly or lets them
-// squeeze an opponent. favorSide is the 'H'/'T' that benefits flippingPlayer.
+// Lucky Duck: any coin flip the ability holder personally triggers is
+// theirs to call, not the bank's — if they've already submitted choices
+// via chooseLuckyDuckFlips (state.luckyDuckChoices), each flip consumes
+// the next one in order. favorSide (still used as-is for a plain player's
+// literal 50/50 flip — no, favorSide only ever applied to Lucky Duck
+// forcing) is kept only as a fallback for the rare case flipCoin() gets
+// called on a Lucky Duck player with no choices queued (shouldn't happen
+// once every flip site routes through beginLuckyDuckFlipChoice first, but
+// safer than crashing or silently flipping randomly for an ability whose
+// whole point is control).
 function flipCoin(flippingPlayer, favorSide){
-  if(flippingPlayer && hasAbility(flippingPlayer,'luckyduck')) return favorSide;
+  if(flippingPlayer && hasAbility(flippingPlayer,'luckyduck')){
+    if(state.luckyDuckChoices && state.luckyDuckChoices.length > 0){
+      return state.luckyDuckChoices.shift();
+    }
+    return favorSide;
+  }
   return Math.random() < 0.5 ? 'H' : 'T';
+}
+
+// Pauses whatever card-flow was mid-resolution so a Lucky Duck player can
+// pick heads/tails for each of `count` coins themselves, instead of the
+// old behavior of silently forcing every flip to one hardcoded "favorable"
+// side — that worked for flip-count-scaling cards (more heads is always
+// at least as good: Flip Draw, Demolisher, Builder, Lottery, etc.) but
+// actively hurt cards like Small Moves, where the flip picks a direction
+// and forward isn't always what you want — a Lucky Duck player had zero
+// way to ever choose backward. resumeFnName is looked up in
+// LUCKY_DUCK_RESUMABLE once they submit (see chooseLuckyDuckFlips) — a
+// name string rather than the function itself since state gets broadcast
+// to clients as JSON, which can't carry a function reference.
+function beginLuckyDuckFlipChoice(count, resumeFnName){
+  state.pendingLuckyDuckFlip = { count, resumeFnName };
+  state.phase = 'choosing-luckyduck-flips';
+}
+
+// Every flip-driving function that beginLuckyDuckFlipChoice might need to
+// resume once the player actually submits their choices — see
+// chooseLuckyDuckFlips below. Function DECLARATIONS (not consts), so this
+// object can reference them regardless of where it sits in the file
+// thanks to hoisting.
+const LUCKY_DUCK_RESUMABLE = {
+  flipCoinsForFlipDraw, flipCoinsForDemolisher, flipCoinsForLottery, flipCoinsForBuilder,
+  flipCoinsForSlow, flipCoinsForCustom, flipCoinsForBonus, flipCoinsForDriveByCoin,
+  flipCoinsForCurse, flipCoinsForGamblingNight, flipCoinsForSteal, resolveSmallMovesFlip,
+};
+
+function chooseLuckyDuckFlips(results){
+  const pending = state.pendingLuckyDuckFlip;
+  if(!pending || state.phase !== 'choosing-luckyduck-flips') return;
+  if(!Array.isArray(results) || results.length !== pending.count || results.some(r => r!=='H' && r!=='T')) return;
+  const resumeFnName = pending.resumeFnName;
+  state.pendingLuckyDuckFlip = null;
+  state.luckyDuckChoices = results.slice();
+  LUCKY_DUCK_RESUMABLE[resumeFnName]();
+  state.luckyDuckChoices = null; // always fully consumed by a matching-length flip site; clear defensively either way
+}
+
+// Small Moves' single flip, split out of playCard's card.type==='smallmoves'
+// branch so it can be called either immediately (non-Lucky-Duck) or after
+// beginLuckyDuckFlipChoice's picker resolves — see the comment at that
+// call site for why this is the one flip card Lucky Duck actually needs
+// a real tails option for.
+function resolveSmallMovesFlip(){
+  const player = currentPlayer();
+  const heads = flipCoin(player, 'H') === 'H';
+  player.smallMoveDir = heads ? 1 : -1;
+  log(player.name+' flipped '+(heads?'Heads (forward)':'Tails (backward)')+' for Small Moves — usable once after this roll.');
+  // Small Moves is an instant effect with no result phase of its own — the
+  // original code left state.phase untouched, implicitly still 'pre-roll'
+  // the whole time. Every OTHER Lucky Duck flip site naturally lands on
+  // its own next phase as part of its normal post-flip logic (already
+  // ran again on resume), but this one doesn't, so without setting it
+  // explicitly here the player would be stuck showing
+  // 'choosing-luckyduck-flips' after their choice already resolved.
+  state.phase = 'pre-roll';
 }
 
 // Greedy Landlord (owner) and Coupon Clipper (payer) act on whatever rent
@@ -3103,9 +3350,8 @@ function rollDice(){
     const passedPositions = positionsInPath(fromPos, total, dir);
     const victims = state.players.filter(p => p.id !== player.id && !p.bankrupt && !p.inJail && passedPositions.includes(p.position));
     if(victims.length > 0){
-      victims.forEach(v=>{ v.money -= amount; creditPlayer(player, amount, 'Drive By'); });
-      log(player.name+' drove by and stole $'+amount+' each from '+victims.map(v=>v.name).join(', ')+'.');
-      victims.forEach(v=>checkBankrupt(v));
+      victims.forEach(v=>{ chargePlayer(v, amount, player, 'Drive By', false); });
+      log(player.name+' drove by and stole up to $'+amount+' each from '+victims.map(v=>v.name).join(', ')+'.');
     } else {
       log(player.name+' drove by but passed no one this turn.');
     }
@@ -3120,10 +3366,10 @@ function rollDice(){
       const ownedPassed = interior.filter(pos => giver.owned.includes(pos));
       if(ownedPassed.length > 0){
         const amount = ownedPassed.length * 100;
-        player.money -= amount;
-        creditPlayer(giver, amount, 'Pass By Remix');
-        log(player.name+' passed '+ownedPassed.length+' of '+giver.name+"'s propert"+(ownedPassed.length>1?'ies':'y')+' and paid them $'+amount+' (Pass By Remix).');
-        checkBankrupt(player, giver);
+        const paid = chargePlayer(player, amount, giver, 'Pass By Remix');
+        log(paid < amount
+          ? player.name+' only had $'+paid+' — pays '+giver.name+' everything they had ($'+amount+' owed, Pass By Remix) and goes bankrupt.'
+          : player.name+' passed '+ownedPassed.length+' of '+giver.name+"'s propert"+(ownedPassed.length>1?'ies':'y')+' and paid them $'+amount+' (Pass By Remix).');
       }
     }
   }
@@ -3190,7 +3436,9 @@ function confirmSmallMove(useIt){
     extensionUsed = true;
   }
 
-  state.doubleBonus = (isDouble || extensionUsed) && !player.inJail;
+  // Same !player.bankrupt guard as finishMovementFlow's copy of this
+  // assignment — resolveLanding just above may have bankrupted them.
+  state.doubleBonus = (isDouble || extensionUsed) && !player.inJail && !player.bankrupt;
   if(state.doubleBonus){
     player.turnsElapsed = (player.turnsElapsed||0) + 1;
     player.cardsPlayedThisTurn = 0;
@@ -3240,7 +3488,12 @@ function sendToJail(player){
   if(hasAbility(player,'officer')) return; // Officers can never be sent to Jail
   player.position = 10;
   player.inJail = true;
-  player.jailTurns = 2;
+  // Standard Monopoly rule: 3 roll attempts to break out on doubles before
+  // being forced out regardless — this used to be 2 (jailTurns decrements
+  // once per failed attempt in rollForJailBreak/serveJailTurn, released
+  // once it hits 0), so a player was being auto-released after their
+  // SECOND failed roll instead of their third.
+  player.jailTurns = 3;
   player.extensionActive = 0; // any pending Extension charge is voided by going to jail
   // Any remaining un-rolled dice from a One at a Time sequence are voided
   // too — same reasoning as Extension, and matches the existing "jail
@@ -3259,9 +3512,16 @@ function sendToJail(player){
 function payTaxOrRent(payer, space){
   const owner = findOwner(player_position_of(space));
   if(!owner){
-    payer.money -= space.amount;
-    state.freeParkingPot += space.amount;
-    log(payer.name+' paid $'+space.amount+' in tax (added to Free Parking pot).');
+    // Bank-owed tax — no collector to cap the payment against, but a
+    // player who can't afford it still needs to be checked for
+    // bankruptcy same as any other debt (this previously never called
+    // checkBankrupt at all, so unpaid tax alone could never bankrupt
+    // anyone no matter how negative it left them).
+    const paid = chargePlayer(payer, space.amount, null, 'tax');
+    state.freeParkingPot += paid;
+    log(paid < space.amount
+      ? payer.name+' only had $'+paid+' — pays everything they had ($'+space.amount+' in tax owed) and goes bankrupt.'
+      : payer.name+' paid $'+space.amount+' in tax (added to Free Parking pot).');
     return;
   }
   if(owner === payer){
@@ -3280,10 +3540,10 @@ function payTaxOrRent(payer, space){
   const beforeAbilityRent = space.amount;
   const rent = applyRentAbilities(payer, owner, beforeAbilityRent);
   logRentAbilityNote(payer, owner, beforeAbilityRent, rent);
-  payer.money -= rent;
-  creditPlayer(owner, rent, 'rent');
-  log(payer.name+' paid $'+rent+" to "+owner.name+' for landing on '+space.name+" (Officer's property).");
-  checkBankrupt(payer, owner);
+  const paid = chargePlayer(payer, rent, owner, 'rent');
+  log(paid < rent
+    ? payer.name+' only had $'+paid+' — pays '+owner.name+' everything they had ($'+rent+" owed, Officer's property) and goes bankrupt."
+    : payer.name+' paid $'+rent+" to "+owner.name+' for landing on '+space.name+" (Officer's property).");
 }
 
 // Officer: landing on Go To Jail sends a random OTHER player to Jail
@@ -3304,10 +3564,10 @@ function officerGoToJailRedirect(player){
 function chargeJailExitFeeToOfficer(player){
   const officer = state.players.find(p => hasAbility(p,'officer') && !p.bankrupt && p.id !== player.id);
   if(!officer) return;
-  player.money -= 100;
-  creditPlayer(officer, 100, 'jail exit fee');
-  log(player.name+' pays '+officer.name+' $100 for leaving Jail (Officer).');
-  checkBankrupt(player, officer);
+  const paid = chargePlayer(player, 100, officer, 'jail exit fee');
+  log(paid < 100
+    ? player.name+' only had $'+paid+' — pays '+officer.name+' everything they had ($100 owed, Officer) and goes bankrupt.'
+    : player.name+' pays '+officer.name+' $100 for leaving Jail (Officer).');
 }
 
 // Chance/Community Chest cards are drawn and applied one at a time, then
@@ -3695,10 +3955,10 @@ function payRent(payer, owner, space){
   rent = applyRentAbilities(payer, collector, rent);
   logRentAbilityNote(payer, collector, beforeAbilityRent, rent);
 
-  payer.money -= rent;
-  creditPlayer(collector, rent, 'rent');
-  log(payer.name+' paid $'+rent+' rent to '+collector.name+'.');
-  checkBankrupt(payer, collector);
+  const paid = chargePlayer(payer, rent, collector, 'rent');
+  log(paid < rent
+    ? payer.name+' only had $'+paid+' — pays '+collector.name+' everything they had ($'+rent+' owed) and goes bankrupt.'
+    : payer.name+' paid $'+rent+' rent to '+collector.name+'.');
 }
 
 // Hard Hitter's payout — identical to payRent's own skipRentActive/
@@ -3746,10 +4006,10 @@ function payDoubleRent(payer, owner, space){
   rent = applyRentAbilities(payer, owner, rent);
   logRentAbilityNote(payer, owner, beforeAbilityRent, rent);
 
-  payer.money -= rent;
-  creditPlayer(owner, rent, 'rent');
-  log(payer.name+' paid DOUBLE rent of $'+rent+' to '+owner.name+' (Hard Hitter).');
-  checkBankrupt(payer, owner);
+  const paid = chargePlayer(payer, rent, owner, 'rent');
+  log(paid < rent
+    ? payer.name+' only had $'+paid+' — pays '+owner.name+' everything they had (DOUBLE rent of $'+rent+' owed, Hard Hitter) and goes bankrupt.'
+    : payer.name+' paid DOUBLE rent of $'+rent+' to '+owner.name+' (Hard Hitter).');
 }
 
 function player_position_of(space){
@@ -3811,10 +4071,21 @@ function payReversedRent(payer, owner, space){
   }
   const rent = calcBaseRent(owner, space);
   const half = Math.ceil(rent / 2);
-  owner.money -= half;
-  creditPlayer(payer, half, 'reversed rent');
-  log(payer.name+' used Uno Reverse on '+space.name+' — '+owner.name+' paid them $'+half+' instead (half the normal rent).');
-  checkBankrupt(owner);
+  // Deliberately not routed through chargePlayer/checkBankrupt's killer
+  // param — same as before this cap was added, the payer here doesn't
+  // inherit the owner's hand/houses on bankruptcy the way a normal
+  // rent-collecting owner would, since this is a reversed payment, not
+  // a real landlord relationship.
+  const paidHalf = Math.min(half, Math.max(0, owner.money));
+  owner.money -= paidHalf;
+  creditPlayer(payer, paidHalf, 'reversed rent');
+  log(paidHalf < half
+    ? owner.name+' only had $'+paidHalf+' — pays '+payer.name+' everything they had (Uno Reverse, $'+half+' owed) and goes bankrupt.'
+    : payer.name+' used Uno Reverse on '+space.name+' — '+owner.name+' paid them $'+half+' instead (half the normal rent).');
+  if(paidHalf < half && !owner.bankrupt){
+    owner.money -= (half - paidHalf);
+    checkBankrupt(owner, undefined, true);
+  }
 }
 
 // Landing on your own property with Uno Reverse active: pay half the rent
@@ -3849,13 +4120,27 @@ function distributeUnoReverseRent(amounts){
     log('Distribution must add up to exactly $'+pending.amount+' (currently $'+total+').');
     return;
   }
-  player.money -= pending.amount;
-  others.forEach(p=>{ creditPlayer(p, amounts[p.id]||0, 'Uno Reverse payout'); });
-  log(player.name+' distributed the $'+pending.amount+' Uno Reverse payout: '+others.map(p=>p.name+' $'+(amounts[p.id]||0)).join(', ')+'.');
+  // Same proportional-scaling principle as distributeCurseLoss above —
+  // pay what they actually have, split across recipients in the same
+  // ratio they chose, rather than letting the full amount go through
+  // unconditionally and take the player arbitrarily negative.
+  const totalPaid = Math.min(pending.amount, Math.max(0, player.money));
+  const ratio = pending.amount > 0 ? totalPaid / pending.amount : 0;
+  player.money -= totalPaid;
+  others.forEach(p=>{ creditPlayer(p, Math.floor((amounts[p.id]||0) * ratio), 'Uno Reverse payout'); });
+  log(totalPaid < pending.amount
+    ? player.name+' could only cover $'+totalPaid+' of the $'+pending.amount+' Uno Reverse payout — pays everyone what\'s left, scaled down, and goes bankrupt.'
+    : player.name+' distributed the $'+pending.amount+' Uno Reverse payout: '+others.map(p=>p.name+' $'+(amounts[p.id]||0)).join(', ')+'.');
+  const shortfall = pending.amount - totalPaid;
   state.pendingUnoReverse = null;
   finalizeLandingPhase();
   resumeRevealQueueIfPending();
-  checkBankrupt(player);
+  if(shortfall > 0 && !player.bankrupt){
+    player.money -= shortfall;
+    checkBankrupt(player, undefined, true);
+  } else {
+    checkBankrupt(player);
+  }
 }
 
 function buyHouse(position){
@@ -3957,14 +4242,19 @@ function unmortgageProperty(position){
 // they'd built (same rate as selling to the bank); their properties are
 // stripped of houses/mortgages and become "up for grabs" on the board
 // rather than transferring to the killer.
-function checkBankrupt(player, killer){
+function checkBankrupt(player, killer, alreadyCapped){
   if(player.money < 0 && !player.bankrupt){
     if(hasAbility(player,'luckyduck') && !player.luckyDuckRevived){
       // Whoever bankrupted them only ends up with what the player actually
       // had — claw back the shortfall so the killer isn't paid money that
-      // was never really there, then revive with a fresh $500.
+      // was never really there, then revive with a fresh $500. Skipped
+      // when alreadyCapped (set by chargePlayer): that caller already
+      // credited the killer only the capped, actually-available amount
+      // up front, so there's no overpay left to claw back — clawing back
+      // the deficit on top of an already-correct payment would take the
+      // killer well below what they're actually owed.
       const deficit = -player.money;
-      if(killer) killer.money -= deficit;
+      if(killer && !alreadyCapped) killer.money -= deficit;
       player.money = 500;
       player.luckyDuckRevived = true;
       log(player.name+' would have gone bankrupt, but Lucky Duck revives them with $500! (second life used)');
@@ -3974,7 +4264,19 @@ function checkBankrupt(player, killer){
       return;
     }
     player.bankrupt = true;
+    player.money = 0; // a bankrupt player is just out of money, not in debt — never display/carry forward a huge negative balance
     log(player.name+' has gone bankrupt!');
+
+    // A bankrupt player can never take another action, including
+    // finishing out whatever roll/turn they were mid-way through when
+    // this triggered (e.g. rolling doubles, landing on a property they
+    // can't afford, going bankrupt, then still being offered "Roll
+    // Again" from that same doubles roll) — clearing doubleBonus here
+    // means the client won't offer it, and the normal auto-end-turn
+    // timer (see the client's autoEndTurnTimer) picks up from there and
+    // hands the turn to the next non-bankrupt player via endTurn's own
+    // bankrupt-skipping loop, same as any other end of turn.
+    if(state.current === player.id) state.doubleBonus = false;
 
     // Rent Thief needs 3+ active players — if this bankruptcy drops below
     // that and the card hasn't been drawn yet, it can never come up useful,
@@ -4112,7 +4414,20 @@ function checkHandTrimming(){
   if(player.hand.length > maxHandSize(player)){
     state.phase = 'trimming-hand';
   } else if(state.phase === 'trimming-hand'){
-    state.phase = player.inJail ? 'in-jail' : 'pre-roll';
+    // Previously hardcoded straight to 'pre-roll' regardless of what
+    // actually interrupted — if a hand overflow happened mid-doubles-chain
+    // (e.g. Hard Hitter handing a card back, a card effect drawing into an
+    // already-full hand), discarding down would silently skip the
+    // 'turn-over' phase entirely: the "Roll Again" button never showed, and
+    // — worse — rollAgain()'s own `state.doubleBonus = false` never ran,
+    // so doubleBonus was left stale-true sitting in 'pre-roll'. Routing
+    // through resolvePendingGoChoicePhase (same helper settleLandingPhase
+    // uses) instead of deciding directly also covers the rarer case where
+    // an ability grant was ALSO waiting behind the hand-size block — that
+    // has to come first, same priority order settleLandingPhase already
+    // establishes, or a same-roll "grant an ability" + "hand overflow"
+    // collision would strand pendingGoAbilityChoice unresolved forever.
+    state.phase = player.inJail ? 'in-jail' : resolvePendingGoChoicePhase(state.doubleBonus ? 'turn-over' : 'pre-roll');
   }
 }
 
@@ -4490,7 +4805,7 @@ module.exports = {
   distributeUnoReverseRent, flipCoinsForDriveByCoin, resolveDriveByCoinOutcome,
   chooseTeleportOtherDestination, assignGiveawayCard,
   chooseHalfChoosingValue, flipCoinsForGamblingNight, resolveGamblingNightOutcome,
-  chooseGoAbility,
+  chooseGoAbility, chooseLuckyDuckFlips,
   performReroll,
   acknowledgeFreeloProperty, discardCard, redrawRentThiefCard, forfeitPlayer,
   requestPause, voteUnpause,
