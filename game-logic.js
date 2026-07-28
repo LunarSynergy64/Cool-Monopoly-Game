@@ -43,7 +43,7 @@ const SPACES = [
   {name:'Short Line', num:26, type:'railroad', price:200, houseCost:100},
   {name:'Chance', type:'chance'},
   {name:'Park Place', num:27, type:'property', price:350, color:'darkblue', houseCost:200, rent:[35,175,500,1100,1300,1500]},
-  {name:'Luxury Tax', type:'tax', amount:100},
+  {name:'Luxury Tax', type:'tax', amount:75},
   {name:'Boardwalk', num:28, type:'property', price:400, color:'darkblue', houseCost:200, rent:[50,200,600,1400,1700,2000]},
 ];
 
@@ -634,7 +634,10 @@ function drawFromPile(){
 // acceptTrade's negotiated money exchange) — those aren't "the flow of
 // income between players" this rule targets.
 function creditPlayer(player, amount, reason){
-  if(amount <= 0) return;
+  // A non-finite amount (NaN/Infinity — e.g. from a corrupted payer, see
+  // chargePlayer below) must never be added to a clean player's balance,
+  // or the corruption spreads to them too via `+=`.
+  if(!Number.isFinite(amount) || amount <= 0) return;
   if(state.suddenDeath){
     log('(Sudden Death: the $'+amount+' '+(reason||'payment')+' vanishes into the bank instead of reaching '+player.name+'.)');
     return;
@@ -673,6 +676,12 @@ function creditPlayer(player, amount, reason){
 // logic serve both cases instead of only the rent-shaped one.
 function chargePlayer(payer, amount, collector, reason, collectorIsKiller){
   if(collectorIsKiller === undefined) collectorIsKiller = true;
+  // If payer.money is already corrupted (NaN, from some earlier bug),
+  // treat it as $0 and actually reset it rather than letting `paid` come
+  // out NaN too — that NaN would flow straight into creditPlayer below
+  // and corrupt the collector's balance as well, spreading the bug to
+  // every player who ever pays/collects rent from the corrupted one.
+  if(!Number.isFinite(payer.money)) payer.money = 0;
   const paid = Math.min(amount, Math.max(0, payer.money));
   const shortfall = amount - paid;
   payer.money -= paid;
@@ -789,12 +798,12 @@ function findHousedPropertiesOf(players, excludeId){
 }
 
 const CHANCE_DECK = [
-  {text:'Advance to GO. Collect $200.', apply(p){ advanceTo(p,0); }},
-  {text:'Advance to Illinois Avenue. If you pass GO, collect $200.', apply(p){ advanceTo(p,24); }},
-  {text:'Advance to St. Charles Place. If you pass GO, collect $200.', apply(p){ advanceTo(p,11); }},
-  {text:'Advance to the nearest Utility. If unowned, you may buy it from the Bank.', apply(p){ advanceTo(p, nearestUtility(p.position)); }},
-  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.', apply(p){ advanceTo(p, nearestRailroad(p.position)); }},
-  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.', apply(p){ advanceTo(p, nearestRailroad(p.position)); }},
+  {text:'Advance to GO. Collect $200.', apply(p){ advanceTo(p,0,true); }},
+  {text:'Advance to Illinois Avenue. If you pass GO, collect $200.', apply(p){ advanceTo(p,24,true); }},
+  {text:'Advance to St. Charles Place. If you pass GO, collect $200.', apply(p){ advanceTo(p,11,true); }},
+  {text:'Advance to the nearest Utility. If unowned, you may buy it from the Bank.', apply(p){ advanceTo(p, nearestUtility(p.position), true); }},
+  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.', apply(p){ advanceTo(p, nearestRailroad(p.position), true); }},
+  {text:'Advance to the nearest Railroad. If unowned, you may buy it from the Bank. If owned, pay owner twice the rental.', apply(p){ advanceTo(p, nearestRailroad(p.position), true); }},
   {text:'Bank pays you a dividend of $50.', apply(p){ p.money += 50; }},
   {text:'Get Out of Jail Free. This card is kept until needed.', apply(p){ p.getOutOfJailFree = (p.getOutOfJailFree||0)+1; }},
   {text:'Go back 3 spaces.', apply(p){ moveBy(p,-3); }},
@@ -808,8 +817,8 @@ const CHANCE_DECK = [
     log(p.name+' owes $'+amount+' for general repairs ('+houses+' house'+(houses===1?'':'s')+', '+hotels+' hotel'+(hotels===1?'':'s')+')'+(paid<amount?' — could only pay $'+paid+' and goes bankrupt.':'.'));
   }},
   {text:'Pay a speeding fine of $15.', apply(p, state){ state.freeParkingPot += chargePlayer(p, 15, null, 'speeding fine'); }},
-  {text:'Take a trip to Reading Railroad. If you pass GO, collect $200.', apply(p){ advanceTo(p,5); }},
-  {text:'Advance to Boardwalk.', apply(p){ advanceTo(p,39); }},
+  {text:'Take a trip to Reading Railroad. If you pass GO, collect $200.', apply(p){ advanceTo(p,5,true); }},
+  {text:'Advance to Boardwalk.', apply(p){ advanceTo(p,39,true); }},
   {text:'You have been elected Chairman of the Board. Pay each player $50.', apply(p, state){
     state.players.forEach(other=>{
       if(other!==p && !other.bankrupt) chargePlayer(p, 50, other, 'Chairman of the Board', false);
@@ -819,7 +828,7 @@ const CHANCE_DECK = [
 ];
 
 const CHEST_DECK = [
-  {text:'Advance to GO. Collect $200.', apply(p){ advanceTo(p,0); }},
+  {text:'Advance to GO. Collect $200.', apply(p){ advanceTo(p,0,true); }},
   {text:'Bank error in your favor. Collect $200.', apply(p){ p.money += 200; }},
   {text:"Doctor's fee. Pay $50.", apply(p, state){ state.freeParkingPot += chargePlayer(p, 50, null, "doctor's fee"); }},
   {text:'From sale of stock you get $50.', apply(p){ p.money += 50; }},
@@ -954,7 +963,13 @@ function addPlayer(name, pieceId){
   if(name) player.name = String(name).slice(0, 20);
   state.players.push(player);
   state.turnOrder.push(id); // joins at the bottom of the roll/display order, not shuffled in
-  log(player.name+' joined the game mid-way through — starting fresh, at a disadvantage to everyone already playing.');
+  // Same starting deal newGame gives everyone else, so a mid-game joiner
+  // isn't stuck with an empty hand for the rest of the game — everything
+  // else about their disadvantage (no money head start beyond the base
+  // $1500, no properties, no ability) still stands.
+  drawCardIfRoom(player);
+  drawCardIfRoom(player);
+  log(player.name+' joined the game mid-way through, starting with 2 cards like everyone else did — still at a disadvantage on money and properties.');
   return id;
 }
 
@@ -3193,15 +3208,15 @@ function awardPassingGoMoney(player){
   log(player.name+' passed GO, collected $200.');
 }
 
-// Only used for the player's own dice roll, and for hand-card-driven
-// teleports the player deliberately chose to play (see advanceTo's
-// awardAbility param) — card-driven moves that are an automatic side
-// effect of an already-drawn card (Chance/Chest "Advance to GO", etc.)
-// still pay the $200 but don't also trigger this grant, or landing on
-// Chance/Chest + drawing an "Advance to GO" card would double-grant in
-// one turn. Grants an ability (random or choice, per the ruleset) until
-// the player hits maxAbilitiesPerPlayer; every pass after that draws a
-// card instead.
+// Used for the player's own dice roll and for every card-driven teleport
+// (hand-card teleports the player deliberately played, and the classic
+// Chance/Chest "Advance to X" cards — see advanceTo's awardAbility param)
+// — passing GO always grants the same way regardless of what moved the
+// player there. A player can only ever receive the ability once (grantGoReward
+// falls back to a normal card once they have one, or once past
+// maxAbilitiesPerPlayer), so even a turn where GO gets passed twice can't
+// hand out two abilities — worst case is an extra card, same as two
+// separate dice-roll GO passes across two turns would give anyway.
 function awardPassingGoWithCard(player){
   awardPassingGoMoney(player);
   grantGoReward(player);
@@ -3464,14 +3479,12 @@ function moveBy(player, delta){
 }
 
 // awardAbility: when true, passing GO here counts the same as a normal
-// dice-driven pass (money + first-ever ability, or a card after that) —
-// used by hand-card teleports the player deliberately chose to play
-// (Buyer, the color Teleport cards, Taxation, Lottery's send-to-Free-
-// Parking). Left false (money only, matching the original behavior) for
-// the classic Chance/Community Chest "Advance to X" cards, since those
-// are an automatic side effect of a landing that already drew its own
-// custom-deck card — awarding the ability there too would let one
-// landing double-dip.
+// dice-driven pass (money + first-ever ability, or a card after that).
+// Every card-driven teleport passes true here — both hand-card teleports
+// the player deliberately chose to play (Buyer, the color Teleport cards,
+// Taxation, Lottery's send-to-Free-Parking) and the classic Chance/
+// Community Chest "Advance to X" cards — so passing GO always awards the
+// same way no matter which mechanism moved the player there.
 function advanceTo(player, pos, awardAbility){
   const fromPos = player.position;
   const steps = (pos - fromPos + 40) % 40;
@@ -4308,11 +4321,19 @@ function checkBankrupt(player, killer, alreadyCapped){
         killer.money += houseValue;
         log(killer.name+" collects $"+houseValue+" from "+player.name+"'s houses/hotels, sold back to the bank.");
       }
+      let anyReleasable = false;
       player.owned.forEach(pos=>{
         delete player.mortgaged[pos];
+        // Tax spaces (Officer's auto-owned Income/Luxury Tax) have no
+        // `price` — they were never a real purchasable property, so
+        // releasing them just drops ownership (landing there goes back to
+        // paying the Free Parking pot) instead of entering the up-for-grabs
+        // pool, which assumes every entry is buyable for space.price.
+        if(SPACES[pos].price === undefined) return;
+        anyReleasable = true;
         if(!state.upForGrabs.includes(pos)) state.upForGrabs.push(pos);
       });
-      if(player.owned.length > 0){
+      if(anyReleasable){
         log(player.name+"'s properties are now up for grabs.");
       }
       player.owned = [];
@@ -4341,6 +4362,10 @@ function forfeitPlayer(playerId){
   player.owned.forEach(pos=>{
     delete player.mortgaged[pos];
     delete player.houses[pos];
+    // Same fix as checkBankrupt above — tax spaces have no price and
+    // aren't real purchasable properties, so they just go back to unowned
+    // instead of entering the up-for-grabs pool.
+    if(SPACES[pos].price === undefined) return;
     if(!state.upForGrabs.includes(pos)) state.upForGrabs.push(pos);
   });
   player.owned = [];

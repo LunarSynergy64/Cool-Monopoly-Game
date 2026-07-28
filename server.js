@@ -356,9 +356,10 @@ io.on('connection', (socket) => {
 
   // Join a live game as a brand-new player — only reachable when nobody
   // wants (or is available) to sub into an existing seat. Starts fresh
-  // (see addPlayer in game-logic.js): $1500, position 0, no properties —
-  // a real disadvantage against players already mid-game, accepted as
-  // the tradeoff for being able to join at all.
+  // (see addPlayer in game-logic.js): $1500, position 0, no properties,
+  // the same 2-card starting hand everyone else got at newGame — a real
+  // disadvantage against players already mid-game, accepted as the
+  // tradeoff for being able to join at all.
   socket.on('joinAsNewPlayer', ({ roomCode, name, pieceId }) => {
     const room = roomCode && rooms[roomCode];
     if(!room || room.phase !== 'live') return;
