@@ -188,25 +188,36 @@
     box-sizing:border-box;
     align-self:flex-end;
   }
-  /* Whose-turn-is-it / "where's this player" clarity: scaled up (via
-     transform, so it works whether the base token size is normal or
-     board-enlarged's vw-based one — no separate enlarge override needed)
-     plus a bright white glow. filter goes on the outer .token div, not
+  /* Whose-turn-is-it / "where's this player" clarity: a bouncing
+     grow-and-shrink bob (transform, so it works whether the base token
+     size is normal or board-enlarged's vw-based one — no separate
+     enlarge override needed) plus a bright white glow, so a highlighted
+     token is moving, not just bigger — much easier to spot at a glance
+     than a static size change. filter goes on the outer .token div, not
      the child <img> — the img already has its own inline per-player-color
      drop-shadow filter (see renderBoard), and an inline style always wins
      over a CSS class on the same element, so a class-based filter there
      would just be silently ignored; putting it on the parent instead
      composites as an additional halo around the already-colored token,
-     no conflict. token-active pulses (whoever's turn it is, all the time,
-     for every connected client) — token-selected (clicked in the Players
-     tab) is a steady glow, no animation, since it's a deliberate look-up
-     rather than an ambient "pay attention" cue. */
+     no conflict. Both token-active (whoever's turn it is) and
+     token-selected (clicked in the Players tab) get the same bob —
+     token-active additionally layers a brightness pulse on top of it
+     (two animations at once, comma-separated in one `animation`
+     shorthand — a second, later `animation` declaration on the same
+     element replaces the first entirely rather than combining with it,
+     so both need listing together here). */
   .token.token-active, .token.token-selected{
-    transform:scale(1.45);
     z-index:3;
     filter:drop-shadow(0 0 4px #fff) drop-shadow(0 0 4px #fff) drop-shadow(0 0 9px #fff);
+    animation:token-highlight-bob 0.9s ease-in-out infinite;
   }
-  .token.token-active{ animation:token-active-pulse 1.1s ease-in-out infinite; }
+  .token.token-active{
+    animation:token-highlight-bob 0.9s ease-in-out infinite, token-active-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes token-highlight-bob{
+    0%, 100% { transform:scale(1.3) translateY(0); }
+    50% { transform:scale(1.65) translateY(-8px); }
+  }
   @keyframes token-active-pulse{
     0%, 100% { filter:drop-shadow(0 0 4px #fff) drop-shadow(0 0 4px #fff) drop-shadow(0 0 9px #fff); }
     50% { filter:drop-shadow(0 0 6px #fff) drop-shadow(0 0 6px #fff) drop-shadow(0 0 14px #fff); }
