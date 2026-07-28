@@ -542,7 +542,7 @@ const ABILITY_DEFS = [
   },
   {
     id:'officer', num:8, name:'Officer', image:'abilities/8-officer.png',
-    desc:"You can never be sent to Jail — landing on Go To Jail instead sends a random other player there, and any other Jail-sending effect targeting you just fizzles. Landing on the same space as another player sends THEM to Jail (only when you're the one arriving). Whenever anyone leaves Jail — by rolling doubles or waiting out their 3rd turn — they pay you $100. Income Tax and Luxury Tax are your own properties from the moment you get this ability: everyone else pays you that tax as rent instead of the Free Parking pot (Chance/Community Chest fees still go to the pot as normal)."
+    desc:"You can never be sent to Jail — landing on Go To Jail instead sends a random other player there, and any other Jail-sending effect targeting you just fizzles. Landing on the same space as another player sends THEM to Jail (only when you're the one arriving). Whenever anyone leaves Jail — by rolling doubles or waiting out their 3rd turn — they pay you $100. On your own turn, before rolling, you can also directly break anyone in Jail free yourself — they immediately pay you $200 instead of the usual $100. Income Tax and Luxury Tax are your own properties from the moment you get this ability: everyone else pays you that tax as rent instead of the Free Parking pot (Chance/Community Chest fees still go to the pot as normal)."
   },
 ];
 
@@ -3501,12 +3501,12 @@ function sendToJail(player){
   if(hasAbility(player,'officer')) return; // Officers can never be sent to Jail
   player.position = 10;
   player.inJail = true;
-  // Standard Monopoly rule: 3 roll attempts to break out on doubles before
-  // being forced out regardless — this used to be 2 (jailTurns decrements
-  // once per failed attempt in rollForJailBreak/serveJailTurn, released
-  // once it hits 0), so a player was being auto-released after their
-  // SECOND failed roll instead of their third.
-  player.jailTurns = 3;
+  // 2 turns to attempt breaking out on doubles (rollForJailBreak/
+  // serveJailTurn decrement this once per failed attempt); once it hits 0,
+  // endTurn's own jailTurns<=0 check auto-releases them at the start of
+  // what would've been their 3rd turn in jail, and that turn continues
+  // into a normal roll instead of being wasted too — 2 turns lost, not 3.
+  player.jailTurns = 2;
   player.extensionActive = 0; // any pending Extension charge is voided by going to jail
   // Any remaining un-rolled dice from a One at a Time sequence are voided
   // too — same reasoning as Extension, and matches the existing "jail
@@ -4555,6 +4555,15 @@ function endTurn(){
 
   if(player.hand.length > maxHandSize(player)){
     state.phase = 'trimming-hand';
+  } else if(player.inJail && player.jailTurns <= 0){
+    // Served out both attempt turns without rolling doubles (see sendToJail's
+    // jailTurns comment) — released right here, at the start of what would
+    // have been their 3rd turn in jail, and that turn continues into a
+    // normal roll instead of being wasted too.
+    player.inJail = false;
+    log(player.name+' has served their time and is released from jail — free to roll normally!');
+    chargeJailExitFeeToOfficer(player);
+    state.phase = 'pre-roll';
   } else if(player.inJail){
     state.phase = 'in-jail';
     log(player.name+"'s turn — still in jail ("+player.jailTurns+" turn(s) left).");
@@ -4570,13 +4579,12 @@ function serveJailTurn(){
   const player = currentPlayer();
   if(state.phase !== 'in-jail') return;
   player.jailTurns -= 1;
-  if(player.jailTurns <= 0){
-    player.inJail = false;
-    log(player.name+' has served their time and is released from jail!');
-    chargeJailExitFeeToOfficer(player);
-  } else {
-    log(player.name+' spends this turn in jail ('+player.jailTurns+' turn(s) left).');
-  }
+  // Actual release (inJail=false) happens lazily at the start of their next
+  // turn, in endTurn's own jailTurns<=0 check — see sendToJail's comment —
+  // so that turn can continue into a normal roll instead of being wasted.
+  log(player.jailTurns > 0
+    ? player.name+' spends this turn in jail ('+player.jailTurns+' turn(s) left).'
+    : player.name+' spends this turn in jail — released and free to roll normally next turn.');
   endTurn();
 }
 
@@ -4630,13 +4638,13 @@ function rollForJailBreak(){
     resolveLanding(player);
   } else {
     player.jailTurns -= 1;
-    if(player.jailTurns <= 0){
-      player.inJail = false;
-      log(player.name+' has served their time and is released from jail!');
-      chargeJailExitFeeToOfficer(player);
-    } else {
-      log(player.name+' stays in jail ('+player.jailTurns+' turn(s) left).');
-    }
+    // Actual release (inJail=false) happens lazily at the start of their
+    // next turn, in endTurn's own jailTurns<=0 check — see sendToJail's
+    // comment — so that turn can continue into a normal roll instead of
+    // being wasted.
+    log(player.jailTurns > 0
+      ? player.name+' stays in jail ('+player.jailTurns+' turn(s) left).'
+      : player.name+' stays in jail — released and free to roll normally next turn.');
     endTurn();
   }
 }
@@ -4650,6 +4658,29 @@ function useGetOutOfJailFree(){
   player.jailTurns = 0;
   log(player.name+' used a Get Out of Jail Free card and can play normally this turn!');
   state.phase = 'pre-roll';
+}
+
+// Officer's other jail-related power (on top of the passive $100-per-
+// natural-release fee in chargeJailExitFeeToOfficer): on their own turn,
+// before rolling, they can directly spring anyone currently in Jail — the
+// freed player immediately pays them $200. Not consumed/limited like a
+// card, so callable as many times as there are jailed players to free.
+// Deliberately does NOT also charge the normal $100 exit fee — this $200
+// is the Officer's own price for actively springing someone, replacing
+// rather than stacking with that passive fee, same as Jail Break the
+// card already being exempted from it.
+function officerBreakOutOfJail(targetId){
+  const player = currentPlayer();
+  if(state.phase !== 'pre-roll') return;
+  if(!hasAbility(player,'officer')) return;
+  const target = state.players[targetId];
+  if(!target || target.bankrupt || !target.inJail) return;
+  target.inJail = false;
+  target.jailTurns = 0;
+  const paid = chargePlayer(target, 200, player, 'Officer jail break fee', false);
+  log(paid < 200
+    ? player.name+' used their Officer ability to break '+target.name+' out of Jail — '+target.name+' only had $'+paid+' and goes bankrupt.'
+    : player.name+' used their Officer ability to break '+target.name+' out of Jail — '+target.name+' pays them $200.');
 }
 
 function debugAddMoney(playerId){
@@ -4836,7 +4867,7 @@ module.exports = {
   requestPause, voteUnpause,
   buyProperty, skipBuy, stealMortgagedProperty, skipSteal,
   buyHouse, sellHouse, placeVampireHouse, mortgageProperty, unmortgageProperty,
-  endTurn, serveJailTurn, rollForJailBreak, useGetOutOfJailFree,
+  endTurn, serveJailTurn, rollForJailBreak, useGetOutOfJailFree, officerBreakOutOfJail,
   proposeTrade, acceptTrade, declineTrade,
   debugAddMoney, debugGiveProperty, debugGiveCard, debugGiveAbility,
   // helpers occasionally useful to server.js directly

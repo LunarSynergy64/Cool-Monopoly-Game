@@ -196,7 +196,7 @@ const TURN_GATED = new Set([
   'acknowledgeFreeloProperty',
   'buyProperty','skipBuy','stealMortgagedProperty','skipSteal',
   'buyHouse','sellHouse','placeVampireHouse','mortgageProperty','unmortgageProperty',
-  'endTurn','serveJailTurn','rollForJailBreak','useGetOutOfJailFree','proposeTrade',
+  'endTurn','serveJailTurn','rollForJailBreak','useGetOutOfJailFree','officerBreakOutOfJail','proposeTrade',
 ]);
 
 // Actions that require being the recipient of the pending trade

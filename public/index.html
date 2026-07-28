@@ -58,8 +58,21 @@
   }
   .board.board-enlarged .space{ font-size:16px; padding:6px; }
   .board.board-enlarged .space .price{ font-size:13px; }
-  .board.board-enlarged .token{ width:56px; height:56px; }
-  .board.board-enlarged .token.token-fallback{ width:28px; height:28px; }
+  /* Tokens/house-badge scaled in vw too (not a fixed px bump) so they grow
+     at the same rate as the board itself regardless of viewport width —
+     32px/16px/9px base * (13.5vw / 84px), the same corner-tile scale
+     factor the grid itself uses above. */
+  .board.board-enlarged .token{ width:5.14vw; height:5.14vw; }
+  .board.board-enlarged .token.token-fallback{ width:2.57vw; height:2.57vw; }
+  .board.board-enlarged .build-badge{ font-size:1.45vw; }
+  /* Side (left/right column) art is pre-rotation sized to match the tile's
+     own dimensions (see .space.side-left/.side-right .art below for why) —
+     at normal size that's a fixed 48x84px matching the fixed grid track
+     sizes, but board-enlarged's tracks are vw-based, so the art needs its
+     own enlarged pre-rotation size or it stays pinned at the tiny normal-
+     size box inside a much bigger enlarged tile. */
+  .board.board-enlarged .space.side-left .art,
+  .board.board-enlarged .space.side-right .art{ width:7.7vw; height:13.5vw; }
   .space{
     background:var(--panel);
     border-radius:3px;
@@ -88,6 +101,13 @@
     font-size:10px; font-weight:700;
   }
   .color-bar{height:8px; width:100%; position:absolute; top:0; left:0; z-index:1;}
+  /* House/hotel emoji badge on an owned tile — was inline-styled font-size
+     (fixed 9px, never scaled) instead of a class, so it stayed tiny even
+     with the board enlarged. See .board-enlarged .build-badge above. */
+  .build-badge{
+    font-size:9px; position:relative; z-index:1;
+    background:rgba(10,12,14,0.72); border-radius:2px; align-self:flex-start;
+  }
   .space .art{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:0;}
   /* Left/right column tiles are wide-and-short, but portrait art doesn't fit
      that without cropping — size the image as if it were sitting in a
@@ -139,6 +159,19 @@
        could paint over a token standing on it and partly hide the piece. */
     z-index:2;
   }
+  /* Breadcrumb trail left behind a token as it walks — see tokenTrail in
+     animateTokenMove. Sits above the tile's own art/tint (z-index:0) and
+     the house badge (z-index:1) but below the token itself (z-index:2),
+     same layering the token already uses relative to those. Opacity/size
+     are set inline per-mark (older marks fainter/smaller — see renderBoard). */
+  .trail-mark{
+    position:absolute; top:50%; left:50%;
+    width:14px; height:14px; border-radius:50%;
+    transform:translate(-50%,-50%);
+    z-index:1; pointer-events:none;
+    box-shadow:0 0 0 2px rgba(0,0,0,0.35);
+  }
+  .board.board-enlarged .trail-mark{ width:2.3vw; height:2.3vw; }
   /* Ownership tint — a translucent wash of the owner's player color over
      the tile's own art/background, sitting above the .art layer (z-index:0)
      but below the name/price/color-bar/house-badge text (z-index:1), same
@@ -154,6 +187,29 @@
     border:2px solid #111;
     box-sizing:border-box;
     align-self:flex-end;
+  }
+  /* Whose-turn-is-it / "where's this player" clarity: scaled up (via
+     transform, so it works whether the base token size is normal or
+     board-enlarged's vw-based one — no separate enlarge override needed)
+     plus a bright white glow. filter goes on the outer .token div, not
+     the child <img> — the img already has its own inline per-player-color
+     drop-shadow filter (see renderBoard), and an inline style always wins
+     over a CSS class on the same element, so a class-based filter there
+     would just be silently ignored; putting it on the parent instead
+     composites as an additional halo around the already-colored token,
+     no conflict. token-active pulses (whoever's turn it is, all the time,
+     for every connected client) — token-selected (clicked in the Players
+     tab) is a steady glow, no animation, since it's a deliberate look-up
+     rather than an ambient "pay attention" cue. */
+  .token.token-active, .token.token-selected{
+    transform:scale(1.45);
+    z-index:3;
+    filter:drop-shadow(0 0 4px #fff) drop-shadow(0 0 4px #fff) drop-shadow(0 0 9px #fff);
+  }
+  .token.token-active{ animation:token-active-pulse 1.1s ease-in-out infinite; }
+  @keyframes token-active-pulse{
+    0%, 100% { filter:drop-shadow(0 0 4px #fff) drop-shadow(0 0 4px #fff) drop-shadow(0 0 9px #fff); }
+    50% { filter:drop-shadow(0 0 6px #fff) drop-shadow(0 0 6px #fff) drop-shadow(0 0 14px #fff); }
   }
 
   /* ============================================================
@@ -953,7 +1009,7 @@ const ABILITY_DEFS = [
   },
   {
     id:'officer', num:8, name:'Officer', image:'abilities/8-officer.png',
-    desc:"You can never be sent to Jail — landing on Go To Jail instead sends a random other player there, and any other Jail-sending effect targeting you just fizzles. Landing on the same space as another player sends THEM to Jail (only when you're the one arriving). Whenever anyone leaves Jail — by rolling doubles or waiting out their 3rd turn — they pay you $100. Income Tax and Luxury Tax are your own properties from the moment you get this ability: everyone else pays you that tax as rent instead of the Free Parking pot (Chance/Community Chest fees still go to the pot as normal)."
+    desc:"You can never be sent to Jail — landing on Go To Jail instead sends a random other player there, and any other Jail-sending effect targeting you just fizzles. Landing on the same space as another player sends THEM to Jail (only when you're the one arriving). Whenever anyone leaves Jail — by rolling doubles or waiting out their 3rd turn — they pay you $100. On your own turn, before rolling, you can also directly break anyone in Jail free yourself — they immediately pay you $200 instead of the usual $100. Income Tax and Luxury Tax are your own properties from the moment you get this ability: everyone else pays you that tax as rent instead of the Free Parking pot (Chance/Community Chest fees still go to the pot as normal)."
   },
 ];
 
@@ -1266,6 +1322,13 @@ function toggleBoardSize(){
   boardEnlarged = !boardEnlarged;
   document.getElementById('board').classList.toggle('board-enlarged', boardEnlarged);
   document.getElementById('boardSizeToggleBtn').textContent = boardEnlarged ? '🔎 Shrink Board' : '🔍 Enlarge Board';
+  // Token spread-out positioning (renderBoard's maxSpread/step math, for
+  // multiple tokens sharing a tile) is computed once at render time from
+  // the tile/token's rendered size — toggling this class alone changes
+  // their CSS size instantly, but leaves that positioning stale until the
+  // next natural re-render, so tokens can end up spaced for the old size.
+  // Re-rendering the board right away keeps that in sync immediately.
+  if(state) renderBoard();
 }
 
 function gridPos(pos){
@@ -1341,16 +1404,25 @@ function renderBoard(){
       const level = owner.houses[i] || 0;
       if(level > 0){
         const buildEl = document.createElement('div');
-        buildEl.style.fontSize = '9px';
+        buildEl.className = 'build-badge';
         buildEl.style.color = owner.color;
-        buildEl.style.position = 'relative';
-        buildEl.style.zIndex = '1';
-        buildEl.style.background = 'rgba(10,12,14,0.72)';
-        buildEl.style.borderRadius = '2px';
-        buildEl.style.alignSelf = 'flex-start';
         buildEl.textContent = level<5 ? '🏠'.repeat(level) : '🏨'+(Math.floor(level/5)>1?'×'+Math.floor(level/5):'')+(level%5>0?'+🏠'.repeat(level%5):'');
         el.appendChild(buildEl);
       }
+    }
+    // Breadcrumb trail for whichever token is currently mid-walk (see
+    // tokenTrail in animateTokenMove) — a fading dot on every space
+    // already passed through this move, so it stays clear where the
+    // token came from even once it's several tiles further along.
+    const trailIdx = tokenTrail.findIndex(t=>t.pos===i);
+    if(trailIdx !== -1){
+      const mark = document.createElement('div');
+      mark.className = 'trail-mark';
+      mark.style.background = tokenTrail[trailIdx].color;
+      const age = (trailIdx+1) / tokenTrail.length; // 0 (oldest) .. 1 (most recent)
+      mark.style.opacity = String(0.2 + 0.55*age);
+      mark.style.transform = `translate(-50%,-50%) scale(${0.6 + 0.4*age})`;
+      el.appendChild(mark);
     }
     board.appendChild(el);
   });
@@ -1380,13 +1452,10 @@ function renderBoard(){
     const groupLen = samePositionCounts[displayPos];
     const groupIdx = samePositionSeen[displayPos] = (samePositionSeen[displayPos]||0);
     samePositionSeen[displayPos]++;
-    const tileWidth = target.offsetWidth || 84;
-    const maxSpread = Math.max(0, tileWidth - 32 - 4);
-    const step = groupLen > 1 ? maxSpread / (groupLen - 1) : 0;
     const token = document.createElement('div');
-    token.className='token';
-    token.style.left = (4 + groupIdx*step)+'px';
-    token.style.bottom = '2px';
+    token.className='token'
+      + (p.id === state.current ? ' token-active' : '')
+      + (p.id === openPlayerDetail ? ' token-selected' : '');
     const pieceDef = PIECE_DEFS.find(pd=>pd.id===p.piece);
     if(pieceDef){
       const img = document.createElement('img');
@@ -1404,6 +1473,17 @@ function renderBoard(){
     }
     target.style.position='relative';
     target.appendChild(token);
+    // Measured live (via offsetWidth) rather than a hardcoded base-size
+    // constant, so the spread math stays correct whether the token is
+    // rendering at its normal size or board-enlarged's much bigger vw-based
+    // one — a fixed "32px token" assumption would badly overlap/misplace
+    // tokens sharing a tile once enlarged.
+    const tileWidth = target.offsetWidth || 84;
+    const tokenWidth = token.offsetWidth || 32;
+    const maxSpread = Math.max(0, tileWidth - tokenWidth - 4);
+    const step = groupLen > 1 ? maxSpread / (groupLen - 1) : 0;
+    token.style.left = (4 + groupIdx*step)+'px';
+    token.style.bottom = '2px';
   });
 }
 
@@ -1906,6 +1986,15 @@ function renderTurnBox(){
         <button class="skip" style="width:100%; margin-top:3px; padding:3px; font-size:10px;" onclick="discardCard(${i})">Discard</button></div>`;
     }).join('') + '</div>';
   } else if(state.phase === 'pre-roll'){
+    if(hasAbility(player,'officer')){
+      const jailed = state.players.filter(p=>p.inJail && !p.bankrupt);
+      if(jailed.length > 0){
+        html += '<div style="font-size:11px; color:var(--text-dim); margin-bottom:4px;">👮 Officer: break someone out (they pay you $200):</div>';
+        jailed.forEach(p=>{
+          html += '<button class="secondary" onclick="officerBreakOutOfJail('+p.id+')">🔓 Break out '+p.name+'</button>';
+        });
+      }
+    }
     if(player.skipRollActive){
       html += '<div style="font-size:13px;margin-bottom:8px;">⛔ A Skip card is active — you can\'t roll this turn, but you can still play cards, trade, and build.</div>';
       html += '<button class="skip" onclick="skipRoll()">Skip Roll</button>';
@@ -2200,6 +2289,10 @@ function renderTradeButtonState(){
 function togglePlayerDetail(id){
   openPlayerDetail = (openPlayerDetail === id) ? null : id;
   renderPlayers();
+  // Also re-render the board so that player's token picks up/loses the
+  // .token-selected highlight (see renderBoard) — makes clicking a player
+  // row double as "show me where they are on the board".
+  renderBoard();
 }
 
 function renderPlayers(){
@@ -2413,7 +2506,7 @@ function showAbilityDetailStatic(abilityId){
 function boardSpaceJailHtml(){
   let html = `<img src="${boardTextureSrc(10)}" onerror="this.remove()">`;
   html += `<div class="detail-title">Jail</div>`;
-  html += `<div class="detail-desc">Just landing here while passing by is a free visit — nothing happens. Players actually sent to Jail (via the Go To Jail space, a card, or 3 doubles in a row) get up to 3 roll attempts to break out on doubles, and are automatically released once the third attempt fails too. Rolling doubles on any jail turn breaks them out immediately and moves them that amount. A Get Out of Jail Free card or the Jail Break card can also release them early.</div>`;
+  html += `<div class="detail-desc">Just landing here while passing by is a free visit — nothing happens. Players actually sent to Jail (via the Go To Jail space, a card, or 3 doubles in a row) stay for up to 2 full turns and are automatically released at the start of their 3rd turn. Rolling doubles on a jail turn breaks them out immediately and moves them that amount. A Get Out of Jail Free card or the Jail Break card can also release them early.</div>`;
   html += `<div class="detail-desc">🔒 While in jail: no rolling to move normally, no trading, no rent collection on your own properties, no playing hand cards, and no building or selling houses.</div>`;
   const jailed = state.players.filter(p=>p.inJail && !p.bankrupt);
   if(jailed.length){
@@ -3017,6 +3110,12 @@ function playVoiceLine(category){
 // socket.on('state', ...) for where this gets triggered.
 // ============================================================
 let tokenAnimation = null; // {playerId, pos} | null — the one token currently mid-walk
+// Breadcrumb trail for the token currently mid-walk — an ordered list of
+// {pos, color} for every space already passed through this move (oldest
+// first), rendered by renderBoard as a fading dot on each of those tiles.
+// Reset at the start of each new animation and cleared once it finishes,
+// same lifecycle as tokenAnimation itself.
+let tokenTrail = [];
 
 // Bumped once per incoming 'state' broadcast (see socket.on('state', ...)
 // below), regardless of whether that broadcast starts its own new
@@ -3039,19 +3138,23 @@ function animateTokenMove(playerId, fromPos, toPos, afterFn){
   const backward = 40 - forward;
   const dir = forward <= backward ? 1 : -1;
   const steps = dir === 1 ? forward : backward;
+  tokenTrail = [];
   if(steps === 0){ afterFn(); return; }
+  const player = state.players[playerId];
+  const trailColor = player ? player.color : '#fff';
   const stepMs = Math.min(150, Math.max(40, 1500/steps));
   let pos = fromPos;
   let i = 0;
   function tick(){
     if(myGeneration !== animationGeneration) return; // superseded by a newer broadcast — stop touching shared state
+    tokenTrail.push({pos, color: trailColor}); // mark the tile being left, before advancing
     pos = (pos + dir + 40) % 40;
     i++;
     tokenAnimation = {playerId, pos};
     renderBoard();
     playMoveSound();
     if(i < steps) setTimeout(tick, stepMs);
-    else { tokenAnimation = null; afterFn(); }
+    else { tokenAnimation = null; tokenTrail = []; afterFn(); }
   }
   setTimeout(tick, stepMs);
 }
@@ -3431,8 +3534,9 @@ socket.on('state', (s) => {
   } else {
     // A previous animation's visual overlay (if any) is now stale too —
     // the committed state below is already correct regardless, so don't
-    // leave a leftover "Moving…" placeholder showing.
+    // leave a leftover "Moving…" placeholder (or its trail) showing.
     tokenAnimation = null;
+    tokenTrail = [];
     state = s;
     render();
   }
@@ -3537,6 +3641,7 @@ function endTurn(){ socket.emit('action', {type:'endTurn'}); }
 function serveJailTurn(){ socket.emit('action', {type:'serveJailTurn'}); }
 function rollForJailBreak(){ socket.emit('action', {type:'rollForJailBreak'}); }
 function useGetOutOfJailFree(){ socket.emit('action', {type:'useGetOutOfJailFree'}); }
+function officerBreakOutOfJail(targetId){ socket.emit('action', {type:'officerBreakOutOfJail', args:[targetId]}); }
 function proposeTrade(){
   const me = state.players[myPlayerId];
   const target = state.players[tradeTargetId];
