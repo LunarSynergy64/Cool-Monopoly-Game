@@ -899,7 +899,8 @@ function makePlayer(id, piece){
     flashSaleBudget:0, passByRemixActive:null, stunnedActive:false,
     conductorActive:false, oneAtATimeActive:false, halfChoosingValue:null,
     rentThiefGiverId:null,
-    abilities:[], luckyDuckRevived:false, builderBonusGranted:{}
+    abilities:[], luckyDuckRevived:false, builderBonusGranted:{},
+    bankruptedBy:null, // set once, in checkBankrupt — who to blame, for the "X was bankrupted by Y" voice line
   };
 }
 
@@ -936,7 +937,18 @@ function newGame(numPlayers, pieceIds, ruleset){
     ruleset: normalizedRuleset,
     pendingGoAbilityChoice: null,
     pendingLuckyDuckFlip: null, // { count, resumeFnName } — see beginLuckyDuckFlipChoice
-    luckyDuckChoices: null // ['H','T',...] once submitted, consumed one at a time by flipCoin()
+    luckyDuckChoices: null, // ['H','T',...] once submitted, consumed one at a time by flipCoin()
+    // Rent-payment voice line signal (public/index.html only) — lastRentEvent
+    // alone can't tell the client "this is a NEW payment" vs "same one
+    // sitting there from the last broadcast" when the same two players pay
+    // each other repeatedly, so rentEventCounter increments on every real
+    // payment and the client diffs THAT instead. See payRent.
+    rentEventCounter: 0,
+    lastRentEvent: null, // {payerId, collectorId} | null
+    // Trade-decline voice line signal — same reasoning as
+    // rentEventCounter above. See declineTrade.
+    tradeDeclineCounter: 0,
+    lastTradeDecline: null, // {fromId, toId} | null
   };
   log('Game started with '+numPlayers+' players.');
   players.forEach(p=>{
@@ -3972,6 +3984,14 @@ function payRent(payer, owner, space){
   log(paid < rent
     ? payer.name+' only had $'+paid+' — pays '+collector.name+' everything they had ($'+rent+' owed) and goes bankrupt.'
     : payer.name+' paid $'+rent+' rent to '+collector.name+'.');
+  // Rent-payment voice line signal — see rentEventCounter's comment in
+  // newGame. Fires regardless of collector (Rent Thief redirect included)
+  // and even on a capped/bankrupting payment, same as the log line above.
+  // amount is `paid` (what actually changed hands), not `rent` (what was
+  // owed) — if the payer couldn't cover it, that's the same number the
+  // log line above reports as "everything they had".
+  state.lastRentEvent = {payerId: payer.id, collectorId: collector.id, amount: paid};
+  state.rentEventCounter = (state.rentEventCounter||0) + 1;
 }
 
 // Hard Hitter's payout — identical to payRent's own skipRentActive/
@@ -4278,6 +4298,10 @@ function checkBankrupt(player, killer, alreadyCapped){
     }
     player.bankrupt = true;
     player.money = 0; // a bankrupt player is just out of money, not in debt — never display/carry forward a huge negative balance
+    // Recorded even when there's no killer (bank-owed debt) — just stays
+    // null in that case. Client-side voice line ("X was bankrupted by Y")
+    // only fires when this is actually set to somebody.
+    player.bankruptedBy = killer ? killer.id : null;
     log(player.name+' has gone bankrupt!');
 
     // A bankrupt player can never take another action, including
@@ -4830,6 +4854,14 @@ function declineTrade(){
     const from = state.players[t.fromId];
     const to = state.players[t.toId];
     log(to.name+' declined the trade from '+from.name+'.');
+    // Trade-decline voice line signal — same counter pattern as
+    // rentEventCounter (see newGame), since the same two players
+    // proposing/declining trades repeatedly is normal, so a plain
+    // before/after comparison of lastTradeDecline's contents alone
+    // couldn't tell "a new decline" from "the same one still sitting
+    // there from a moment ago".
+    state.lastTradeDecline = {fromId: t.fromId, toId: t.toId};
+    state.tradeDeclineCounter = (state.tradeDeclineCounter||0) + 1;
   }
   state.pendingTrade = null;
 }

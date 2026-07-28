@@ -1,0 +1,192 @@
+PROPERTY TRADER — VOICE LINES TRACKER
+======================================
+Plain-text list of every voice line category the code knows about, kept
+up to date as we add more. One line is picked at random each time a
+category is played, so more numbered variations for the same category =
+more variety, not required.
+
+*** THIS FILE IS MIRRORED IN TWO PLACES — KEEP BOTH IDENTICAL ***
+  1. property-trader-online_1/monopoly-online/public/sounds/voice/  (here)
+     — used by the online (server/browser) build.
+  2. sounds/voice/  (top-level, next to monopoly-hotseat.html)
+     — used by the hotseat build. This is also the folder the owner
+     actually drops new recordings into day to day.
+Both builds need their OWN copy of every .mp3 (the online build can only
+serve files from inside property-trader-online_1/monopoly-online/public/,
+it can't reach the top-level folder) — when a new recording gets added
+to one, copy it to the other too, and update this tracker in both spots.
+Number clips specifically go in a "numbers" subfolder under sounds/voice/
+in each location (see the NUMBERS section below) — everything else stays
+directly in the parent sounds/voice/ folder.
+
+Status key: [RECORDED]   = files exist in both folders right now, and
+                            something in the code actually calls them.
+            [SUPERSEDED] = files exist, but no longer called by
+                            anything — replaced by a newer line below.
+            [NEEDED]     = code expects it, files not added yet.
+
+*** RECURRING GOTCHA: don't let the filename end up as "name.mp3.mp3" ***
+This has happened three times now — whatever export/save step is being
+used sometimes appends .mp3 on top of a name that already ends in .mp3.
+Before calling a batch of new recordings done, glob for "*.mp3.mp3" in
+both folders and fix any that show up (the code requests the
+single-extension name and will just silently fail to play a
+double-extension file, no error, no crash — easy to mistake for "the
+line isn't working" instead of a naming mistake).
+
+CURRENT STATUS AT A GLANCE: everything below is [RECORDED] except
+input-needed (1 of 5 variations — it's an unused fallback, no rush), the
+two [SUPERSEDED] rent lines (recorded, but nothing calls them anymore),
+and the-bank ([NEEDED] — new, see the bankrupted-by section below).
+
+
+STANDALONE LINES (played on their own, not chained)
+----------------------------------------------------
+
+your-turn                                          [RECORDED] (5/5)
+  Says: "It's your turn!" (your own phrasing/variety)
+  Files: your-turn-1.mp3 ... your-turn-5.mp3
+  Online: plays only for the browser whose turn it is.
+  Hotseat: plays for the room whenever the turn changes (no per-player
+  audience to restrict it to — everyone shares one screen).
+
+input-needed                                       [RECORDED] (1/5)
+  GENERIC FALLBACK — not currently called by anything (its one real use
+  case, a trade proposal, now uses the more specific proposed-a-trade
+  chain below instead). Kept wired and ready for the next out-of-turn
+  decision that doesn't have its own specific line yet.
+  Says: you have a decision pending outside your own turn
+  Files: input-needed-1.mp3 recorded; -2 through -5 not needed unless/
+  until this actually gets used for something.
+
+
+CHAINABLE SEGMENTS (played back-to-back to build a sentence)
+--------------------------------------------------------------
+
+Player colors — say just "<Color> player."                [RECORDED] (8/8)
+  color-red-1.mp3     "Red player."
+  color-blue-1.mp3    "Blue player."
+  color-green-1.mp3   "Green player."
+  color-yellow-1.mp3  "Yellow player."
+  color-purple-1.mp3  "Purple player."
+  color-cyan-1.mp3    "Cyan player."
+  color-pink-1.mp3    "Pink player."
+  color-gray-1.mp3    "Gray player."
+
+bankrupted-by-1.mp3                                [RECORDED]
+  Says: "was bankrupted by"
+  Full sentence: <victim color> + bankrupted-by + <killer color>
+    e.g. "Red player... was bankrupted by... Cyan player."
+  Plays for: everyone, both builds (global announcement).
+  When there's no specific player to blame (unpaid bank-owed tax debt,
+  or — online only — an AFK forfeit), the-bank fills the killer slot
+  instead of the announcement being skipped — see the-bank-1.mp3 below.
+
+the-bank-1.mp3                                      [NEEDED]
+  Says: "the bank"
+  Full sentence: <victim color> + bankrupted-by + the-bank
+    e.g. "Cyan player... was bankrupted by... the bank."
+  Plays for: everyone, both builds — same fallback slot as a real killer
+  color would go in, just used when bankruptedBy is null.
+
+went-to-jail-1.mp3                                  [RECORDED]
+  Says: "went to jail"
+  Full sentence: <color> + went-to-jail
+    e.g. "Cyan player... went to jail."
+  Plays for: everyone, both builds (global announcement).
+
+proposed-a-trade-1.mp3                              [RECORDED]
+  Says: "proposed a trade"
+  Full sentence: <proposer color> + proposed-a-trade
+    e.g. "Red player... proposed a trade."
+  Online: plays only for the trade's recipient (replaced input-needed
+  for this specific case).
+  Hotseat: plays for the room whenever a new trade is proposed
+  (replaced input-needed here too).
+
+rejected-your-trade-offer-1.mp3                     [RECORDED]
+  Says: "rejected your trade offer"
+  Full sentence: <decliner color> + rejected-your-trade-offer
+    e.g. "Cyan player... rejected your trade offer."
+  Online: plays only for the original proposer (it's THEIR offer that
+  got rejected) — the person who declined doesn't hear anything said
+  back at them.
+  Hotseat: plays for the room whenever a trade gets declined (no
+  per-player "you" to restrict it to, same as every other line here).
+
+paid-you-rent-1.mp3                                [SUPERSEDED]
+you-paid-rent-to-1.mp3                             [SUPERSEDED]
+  These two are recorded and still exist, but nothing calls them anymore
+  — replaced by the amount-aware version directly below. Harmless to
+  leave in place; not used.
+
+RENT, with the amount actually announced          [RECORDED] (5/5 new pieces)
+  Uses the NUMBERS section below to splice the dollar amount in.
+    Collector hears:  <payer color> + paid-you + <amount> + dollars + in-rent
+      e.g. "Red player... paid you... fifty... dollars... in rent."
+    Payer hears:      you-paid + <amount> + dollars + to + <collector color> + in-rent
+      e.g. "You paid... fifty... dollars... to... Cyan player... in rent."
+  Personalized exactly like the superseded pair above — only the
+  relevant player hears their own line; a bystander to someone else's
+  rent payment hears nothing.
+
+  paid-you-1.mp3     "paid you"
+  you-paid-1.mp3     "you paid"
+  dollars-1.mp3      "dollars"
+  in-rent-1.mp3      "in rent"
+  to-1.mp3           "to"
+
+
+NUMBERS (chain together to read out any dollar amount)     [RECORDED] (29/29)
+--------------------------------------------------------------------------
+*** THESE GO IN THEIR OWN SUBFOLDER, NOT LOOSE IN sounds/voice/ ***
+  property-trader-online_1/monopoly-online/public/sounds/voice/numbers/
+  sounds/voice/numbers/                     (top-level, hotseat's copy)
+
+The minimum set needed to read any number from 1 up through the hundreds
+of thousands, via numberToVoiceCategories() in both builds' code: 1-20
+individually (English's teens are irregular — "eleven"/"twelve"/
+"thirteen" etc. aren't built from smaller words, so there's no way around
+one clip each up to 20), the tens words 30/40/.../90 (20 itself is
+already in the 1-20 set above), and the two multiplier words "hundred"/
+"thousand".
+
+  number-1-1.mp3    "One"          number-11-1.mp3   "Eleven"
+  number-2-1.mp3    "Two"          number-12-1.mp3   "Twelve"
+  number-3-1.mp3    "Three"        number-13-1.mp3   "Thirteen"
+  number-4-1.mp3    "Four"         number-14-1.mp3   "Fourteen"
+  number-5-1.mp3    "Five"         number-15-1.mp3   "Fifteen"
+  number-6-1.mp3    "Six"          number-16-1.mp3   "Sixteen"
+  number-7-1.mp3    "Seven"        number-17-1.mp3   "Seventeen"
+  number-8-1.mp3    "Eight"        number-18-1.mp3   "Eighteen"
+  number-9-1.mp3    "Nine"         number-19-1.mp3   "Nineteen"
+  number-10-1.mp3   "Ten"          number-20-1.mp3   "Twenty"
+
+  number-30-1.mp3   "Thirty"       number-70-1.mp3   "Seventy"
+  number-40-1.mp3   "Forty"        number-80-1.mp3   "Eighty"
+  number-50-1.mp3   "Fifty"        number-90-1.mp3   "Ninety"
+  number-60-1.mp3   "Sixty"
+
+  number-hundred-1.mp3    "Hundred"
+  number-thousand-1.mp3   "Thousand"
+
+Example chains (already verified against these exact sequences in code):
+  21     -> Twenty + One                          "Twenty-one"
+  150    -> One + Hundred + Fifty                  "One hundred fifty"
+  1,500  -> One + Thousand + Five + Hundred        "One thousand five hundred"
+  4,999  -> Four + Thousand + Nine + Hundred + Ninety + Nine
+  12,345 -> Twelve + Thousand + Three + Hundred + Forty + Five
+  20,000 -> Twenty + Thousand                      "Twenty thousand"
+234 (verified live in an actual rent payment) -> Two + Hundred + Thirty + Four
+Note: no "zero" clip — numberToVoiceCategories(0) returns an empty list
+on purpose, so a $0 amount just says nothing rather than needing a word
+nobody's recorded yet.
+
+
+HOW TO ADD MORE VARIATIONS LATER
+-----------------------------------
+Any category above can have more than one recording — just add
+<category>-2.mp3, <category>-3.mp3, etc. (matching the existing
+numbering) to BOTH folders, and tell Claude to bump that category's
+count in VOICE_LINE_COUNTS in both public/index.html and
+monopoly-hotseat.html. No other code changes needed.

@@ -3065,16 +3065,133 @@ function playMoveSound(){
 // announcements without footstep sounds, or vice versa. 0 volume is
 // "off", same convention as the move sound slider, no separate toggle.
 //
-// Files aren't recorded yet. Expected at public/sounds/voice/, named
-// <category>-<n>.mp3 where n runs from 1 up to VOICE_LINE_COUNTS[category]
-// (e.g. sounds/voice/your-turn-1.mp3 .. your-turn-5.mp3). One is picked
-// at random each time so it's not the exact same line every turn. Bump
-// the counts below if more lines are added later. Missing files fail
+// Files expected at public/sounds/voice/, named <category>-<n>.mp3 where
+// n runs from 1 up to VOICE_LINE_COUNTS[category] (e.g.
+// sounds/voice/your-turn-1.mp3 .. your-turn-5.mp3). One is picked at
+// random each time so it's not the exact same line every turn. Bump the
+// counts below if more variations are added later. Missing files fail
 // silently via the same onerror pattern every other optional asset in
 // this app already uses — nothing breaks with 0 files in place, or
 // fewer than the configured count.
+//
+// color-<name>: one clip per player color (e.g. "Red player.") — the
+// first piece of a planned chained-sentence system: independently
+// recorded short clips played back-to-back via playVoiceLineSequence
+// build up a full sentence (e.g. color-red + a not-yet-recorded
+// "bankrupted-by" phrase + color-green = "Red player... was bankrupted
+// by... Green player"), instead of needing one recording per
+// color/color combination. Only the color clips exist so far — no game
+// event calls playVoiceLineSequence yet; that comes once a phrase
+// category (like "bankrupted-by") exists to chain them with.
 // ============================================================
-const VOICE_LINE_COUNTS = { 'your-turn': 5, 'input-needed': 5 };
+const VOICE_LINE_COUNTS = {
+  'your-turn': 5,
+  // input-needed is the generic fallback for "you have a decision
+  // pending outside your own turn" — kept around for any FUTURE
+  // out-of-turn decision that doesn't have its own specific chained line
+  // yet. Its one actual use case today (a trade proposal) now has a more
+  // specific line instead (see proposed-a-trade below), so nothing
+  // currently calls playVoiceLine('input-needed') — left wired and ready
+  // for the next such case rather than removed.
+  'input-needed': 5,
+  'color-red': 1, 'color-blue': 1, 'color-green': 1, 'color-yellow': 1,
+  'color-purple': 1, 'color-cyan': 1, 'color-pink': 1, 'color-gray': 1,
+  // "<victim color> player" + bankrupted-by + "<killer color> player" —
+  // global, every client hears it. the-bank fills in for the killer slot
+  // when there wasn't a specific player to blame (unpaid tax debt, an
+  // AFK forfeit).
+  'bankrupted-by': 1, 'the-bank': 1,
+  // SUPERSEDED — see paid-you/you-paid/dollars/in-rent/to below, which
+  // replaced these with a version that actually announces the amount.
+  // Left registered (the owner already recorded these) but nothing calls
+  // them anymore.
+  'paid-you-rent': 1, 'you-paid-rent-to': 1,
+  // Rent, now with the amount spliced in via numberToVoiceCategories:
+  //   collector hears: <payer color> + paid-you + <amount> + dollars + in-rent
+  //     e.g. "Red player paid you fifty dollars in rent."
+  //   payer hears: you-paid + <amount> + dollars + to + <collector color> + in-rent
+  //     e.g. "You paid fifty dollars to Cyan player in rent."
+  // Personalized exactly like the superseded pair above — only the
+  // relevant client hears their own line.
+  'paid-you': 1, 'you-paid': 1, 'dollars': 1, 'in-rent': 1, 'to': 1,
+  // "<proposer color> player" + proposed-a-trade — replaces input-needed
+  // for this specific case (more informative: says who, not just "a
+  // decision is pending"). Personalized like input-needed was: only the
+  // trade's recipient hears it.
+  'proposed-a-trade': 1,
+  // "<color> player" + rejected-your-trade-offer — personalized, only
+  // the original proposer hears it (it's THEIR offer that got rejected).
+  'rejected-your-trade-offer': 1,
+  // "<color> player" + went-to-jail — global, like bankrupted-by, no
+  // second color to chain with (just announces who, not why/how).
+  'went-to-jail': 1,
+  // Numbers, for reading out any dollar amount — see numberToVoiceCategories
+  // below for how these 29 combine to say anything from 1 up through the
+  // hundreds of thousands: 1-20 individually (English's teens are
+  // irregular — "eleven"/"twelve"/"thirteen" etc. aren't built from
+  // smaller pieces, so there's no way around one clip each up to 20), the
+  // tens words 30/40/.../90 (20 itself is already covered above), and the
+  // two multiplier words "hundred"/"thousand".
+  'number-1':1,'number-2':1,'number-3':1,'number-4':1,'number-5':1,
+  'number-6':1,'number-7':1,'number-8':1,'number-9':1,'number-10':1,
+  'number-11':1,'number-12':1,'number-13':1,'number-14':1,'number-15':1,
+  'number-16':1,'number-17':1,'number-18':1,'number-19':1,'number-20':1,
+  'number-30':1,'number-40':1,'number-50':1,'number-60':1,'number-70':1,
+  'number-80':1,'number-90':1,
+  'number-hundred':1,'number-thousand':1,
+};
+
+// Composes an array of voice-line categories that, chained together via
+// playVoiceLineSequence, read a dollar amount out loud using only the 29
+// number-* clips above — the same "small pieces chained into a full
+// sentence" idea as the color names, applied to numbers. Verified
+// against a range of representative amounts (1, 21, 99, 100, 234, 1500,
+// 4999, 12345, 20000, ...) reading out as correct natural English —
+// mathematically keeps working well past 20000 too (up to the hundreds
+// of thousands), since it's the same three-digit-group logic all the
+// way up; just not expected to come up for Monopoly money in practice.
+// Returns [] for 0 (no "zero" clip recorded — caller decides whether $0
+// should say anything at all) and decomposes the magnitude of a negative
+// number (shouldn't come up for money, but avoids silently doing nothing).
+function numberToVoiceCategories(n){
+  n = Math.round(n);
+  if(n === 0) return [];
+  if(n < 0) return numberToVoiceCategories(-n);
+
+  function belowHundred(n){ // 1-99
+    if(n <= 20) return ['number-'+n];
+    const tens = Math.floor(n/10)*10;
+    const ones = n % 10;
+    const parts = ['number-'+tens];
+    if(ones > 0) parts.push('number-'+ones);
+    return parts;
+  }
+  function belowThousand(n){ // 1-999
+    if(n < 100) return belowHundred(n);
+    const hundreds = Math.floor(n/100);
+    const remainder = n % 100;
+    const parts = ['number-'+hundreds, 'number-hundred'];
+    if(remainder > 0) parts.push(...belowHundred(remainder));
+    return parts;
+  }
+  if(n < 1000) return belowThousand(n);
+  const thousands = Math.floor(n/1000);
+  const remainder = n % 1000;
+  const parts = [...belowThousand(thousands), 'number-thousand'];
+  if(remainder > 0) parts.push(...belowThousand(remainder));
+  return parts;
+}
+
+// Maps each of game-logic.js's 8 PLAYER_COLORS hex values to its voice
+// category name above — lets any code identify a player by color for a
+// voice line without needing to duplicate PLAYER_COLORS itself here.
+const PLAYER_COLOR_VOICE = {
+  '#e2543c': 'color-red', '#4c8bf5': 'color-blue', '#4cae6c': 'color-green', '#e2b13c': 'color-yellow',
+  '#9b59b6': 'color-purple', '#26c6da': 'color-cyan', '#e0629b': 'color-pink', '#9aa5b1': 'color-gray',
+};
+function playerColorVoiceCategory(player){
+  return PLAYER_COLOR_VOICE[player.color] || null;
+}
 
 function loadVoiceVolume(){
   try{
@@ -3091,14 +3208,52 @@ function setVoiceVolume(value){
   saveVoiceVolume(voiceVolume);
 }
 
-function playVoiceLine(category){
-  if(voiceVolume <= 0) return;
+// Shared by playVoiceLine and playVoiceLineSequence below — builds and
+// plays one random variation of one category, calling onDone once it
+// either finishes or fails (missing file, decode error, blocked
+// autoplay) so a caller chaining several clips together can move on
+// without stalling on a clip that never fires 'ended'.
+// Number clips (number-1, number-30, number-hundred, ...) live in their
+// own sounds/voice/numbers/ subfolder rather than loose in sounds/voice/
+// alongside everything else — there are 29 of them (see
+// numberToVoiceCategories), enough to be worth keeping separate.
+// Everything else stays directly in sounds/voice/.
+function voiceClipPath(category, n){
+  const folder = category.startsWith('number-') ? 'numbers/' : '';
+  return 'sounds/voice/' + folder + category + '-' + n + '.mp3';
+}
+
+function playOneVoiceClip(category, onDone){
   const count = VOICE_LINE_COUNTS[category] || 1;
   const n = 1 + Math.floor(Math.random() * count);
-  const audio = new Audio('sounds/voice/' + category + '-' + n + '.mp3');
+  const audio = new Audio(voiceClipPath(category, n));
   audio.volume = voiceVolume;
-  audio.addEventListener('error', ()=>{}); // that line hasn't been recorded yet — stay silent
-  audio.play().catch(()=>{});
+  let done = false;
+  const finish = () => { if(!done){ done = true; onDone && onDone(); } };
+  audio.addEventListener('ended', finish);
+  audio.addEventListener('error', finish); // that line hasn't been recorded yet — skip it
+  audio.play().catch(finish);
+}
+
+function playVoiceLine(category){
+  if(voiceVolume <= 0) return;
+  playOneVoiceClip(category);
+}
+
+// Plays a list of voice-line categories back-to-back to build one
+// sentence out of independently recorded clips — see the color-<name>
+// comment above VOICE_LINE_COUNTS for the motivating example. A missing
+// clip in the middle of the chain is skipped (via playOneVoiceClip's own
+// onDone-on-error behavior) rather than stalling the rest of the
+// sentence.
+function playVoiceLineSequence(categories){
+  if(voiceVolume <= 0 || !categories || categories.length === 0) return;
+  let i = 0;
+  function playNext(){
+    if(i >= categories.length) return;
+    playOneVoiceClip(categories[i++], playNext);
+  }
+  playNext();
 }
 
 // ============================================================
@@ -3492,9 +3647,12 @@ socket.on('state', (s) => {
   // first state this tab ever sees, e.g. a fresh join or a reconnect
   // landing mid-turn; that would announce something that didn't just
   // happen). "Your turn" fires when state.current changes to you.
-  // "Input needed" is scoped to the one out-of-turn case that actually
-  // exists today — someone proposed a trade to you — not every decision
-  // phase during your own turn, which would be constant and grating.
+  // A trade proposal targeting you is the one out-of-turn case that
+  // actually exists today — not every decision phase during your own
+  // turn, which would be constant and grating. Announced with the more
+  // specific proposed-a-trade line (who proposed it) rather than the
+  // generic input-needed fallback — see that category's comment in
+  // VOICE_LINE_COUNTS.
   if(oldState){
     if(s.current === myPlayerId && oldState.current !== myPlayerId){
       playVoiceLine('your-turn');
@@ -3502,8 +3660,69 @@ socket.on('state', (s) => {
     const wasTargetedBefore = oldState.pendingTrade && oldState.pendingTrade.toId === myPlayerId;
     const isTargetedNow = s.pendingTrade && s.pendingTrade.toId === myPlayerId;
     if(isTargetedNow && !wasTargetedBefore){
-      playVoiceLine('input-needed');
+      const proposer = s.players.find(p=>p.id===s.pendingTrade.fromId);
+      if(proposer) playVoiceLineSequence([playerColorVoiceCategory(proposer), 'proposed-a-trade']);
     }
+
+    // Trade decline — personalized to the original proposer only (it's
+    // THEIR offer that got rejected); the person who declined doesn't
+    // need to hear anything said back at them. Same counter-diffing
+    // reasoning as rentEventCounter (see its comment in game-logic.js's
+    // newGame) — the same two players can propose/decline repeatedly.
+    if(s.tradeDeclineCounter !== oldState.tradeDeclineCounter && s.lastTradeDecline && myPlayerId === s.lastTradeDecline.fromId){
+      const decliner = s.players.find(p=>p.id===s.lastTradeDecline.toId);
+      if(decliner) playVoiceLineSequence([playerColorVoiceCategory(decliner), 'rejected-your-trade-offer']);
+    }
+
+    // Rent payment — personalized per side (see rentEventCounter's
+    // comment in game-logic.js's newGame for why a counter, not just
+    // comparing lastRentEvent by value, is what detects "a NEW payment
+    // happened" rather than the same one still sitting there from a
+    // moment ago). Only the payer or the collector hears anything;
+    // bystanders get no line for someone else's rent.
+    if(s.rentEventCounter !== oldState.rentEventCounter && s.lastRentEvent){
+      const { payerId, collectorId, amount } = s.lastRentEvent;
+      if(myPlayerId === payerId){
+        const collector = s.players.find(p=>p.id===collectorId);
+        if(collector) playVoiceLineSequence(['you-paid', ...numberToVoiceCategories(amount), 'dollars', 'to', playerColorVoiceCategory(collector), 'in-rent']);
+      } else if(myPlayerId === collectorId){
+        const payer = s.players.find(p=>p.id===payerId);
+        if(payer) playVoiceLineSequence([playerColorVoiceCategory(payer), 'paid-you', ...numberToVoiceCategories(amount), 'dollars', 'in-rent']);
+      }
+    }
+
+    // Bankruptcy — global, every connected client hears it (third-person
+    // "X was bankrupted by Y", nobody's own "you"). Detected the same way
+    // the animation code detects a moved player: compare each player's
+    // bankrupt flag between broadcasts rather than relying on a counter,
+    // since going bankrupt is itself a one-way, only-ever-happens-once
+    // transition per player — no repeat-event risk to guard against.
+    // No specific killer (bankruptedBy is null — unpaid bank-owed debt
+    // like tax, or an AFK forfeit, which never goes through checkBankrupt
+    // at all and so never sets bankruptedBy either) falls back to
+    // the-bank instead of skipping the announcement entirely.
+    s.players.forEach((np, idx)=>{
+      const op = oldState.players[idx];
+      if(op && !op.bankrupt && np.bankrupt){
+        const killer = np.bankruptedBy != null ? s.players.find(p=>p.id===np.bankruptedBy) : null;
+        const killerCategory = killer ? playerColorVoiceCategory(killer) : 'the-bank';
+        playVoiceLineSequence([playerColorVoiceCategory(np), 'bankrupted-by', killerCategory]);
+      }
+    });
+
+    // Sent to Jail — global, same treatment as bankruptcy, just no second
+    // color to chain with (announces who, not how/why — Go To Jail space,
+    // a card, or 3 doubles in a row all end up here the same way). Unlike
+    // bankrupt, inJail isn't a one-way flag (a player can go to Jail more
+    // than once per game) — still safe to detect via a plain flip check
+    // since this only ever compares two directly-adjacent broadcasts, not
+    // anything further back.
+    s.players.forEach((np, idx)=>{
+      const op = oldState.players[idx];
+      if(op && !op.inJail && np.inJail){
+        playVoiceLineSequence([playerColorVoiceCategory(np), 'went-to-jail']);
+      }
+    });
   }
 
   // Every broadcast invalidates whatever animation generation came
