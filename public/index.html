@@ -3234,16 +3234,66 @@ function voiceClipPath(category, n){
   return 'sounds/voice/' + folder + category + '-' + n + '.mp3';
 }
 
+// Plain <audio> playback (playOneVoiceClip's original approach) waits
+// out however much dead air is baked into the actual recording before
+// firing 'ended' — measured at ~0.2s of silence on EACH side of a
+// typical one-word clip (e.g. "number-1-1.mp3" is 0.85s total for a
+// ~0.44s word), which barely matters for one clip alone but stacks into
+// several real seconds of extra silence across a 6-8-clip chained
+// sentence (a rent announcement, say) — exactly the "5 seconds to say
+// one line" the owner ran into. Fixed by decoding through the Web Audio
+// API instead and trimming to just the actual audio content (plus a
+// small padding buffer so words don't get clipped), rather than asking
+// the owner to re-record or manually trim 40+ files. Decoded/trimmed
+// buffers are cached per path — the same clips (colors, "dollars", etc.)
+// get reused constantly across a game, so this also avoids re-fetching/
+// re-decoding/re-analyzing a clip that's already been played once.
+let voiceAudioCtx = null;
+function getVoiceAudioContext(){
+  if(!voiceAudioCtx) voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return voiceAudioCtx;
+}
+
+const VOICE_SILENCE_THRESHOLD = 0.02; // sample amplitude below this counts as silence
+const VOICE_TRIM_PADDING = 0.04; // seconds of padding kept on each side of the detected audio
+
+const voiceBufferCache = new Map(); // path -> Promise<{buffer, start, duration}>
+
+function loadTrimmedVoiceBuffer(path){
+  let cached = voiceBufferCache.get(path);
+  if(cached) return cached;
+  cached = fetch(path)
+    .then(r => { if(!r.ok) throw new Error('voice clip missing: '+path); return r.arrayBuffer(); })
+    .then(arrBuf => getVoiceAudioContext().decodeAudioData(arrBuf))
+    .then(buffer => {
+      const data = buffer.getChannelData(0);
+      let start = 0, end = data.length - 1;
+      while(start < data.length && Math.abs(data[start]) < VOICE_SILENCE_THRESHOLD) start++;
+      while(end > start && Math.abs(data[end]) < VOICE_SILENCE_THRESHOLD) end--;
+      const startTime = Math.max(0, start / buffer.sampleRate - VOICE_TRIM_PADDING);
+      const endTime = Math.min(buffer.duration, (end + 1) / buffer.sampleRate + VOICE_TRIM_PADDING);
+      return { buffer, start: startTime, duration: Math.max(0.05, endTime - startTime) };
+    });
+  voiceBufferCache.set(path, cached);
+  return cached;
+}
+
 function playOneVoiceClip(category, onDone){
   const count = VOICE_LINE_COUNTS[category] || 1;
   const n = 1 + Math.floor(Math.random() * count);
-  const audio = new Audio(voiceClipPath(category, n));
-  audio.volume = voiceVolume;
   let done = false;
   const finish = () => { if(!done){ done = true; onDone && onDone(); } };
-  audio.addEventListener('ended', finish);
-  audio.addEventListener('error', finish); // that line hasn't been recorded yet — skip it
-  audio.play().catch(finish);
+  loadTrimmedVoiceBuffer(voiceClipPath(category, n)).then(({buffer, start, duration}) => {
+    const ctx = getVoiceAudioContext();
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.value = voiceVolume;
+    source.connect(gain).connect(ctx.destination);
+    source.onended = finish;
+    if(ctx.state === 'suspended') ctx.resume().catch(()=>{});
+    source.start(0, start, duration);
+  }).catch(finish); // missing file, decode error, blocked autoplay, etc. — skip it
 }
 
 function playVoiceLine(category){
