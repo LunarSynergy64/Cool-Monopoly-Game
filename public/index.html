@@ -3303,18 +3303,72 @@ function playVoiceLine(category){
 
 // Plays a list of voice-line categories back-to-back to build one
 // sentence out of independently recorded clips — see the color-<name>
-// comment above VOICE_LINE_COUNTS for the motivating example. A missing
-// clip in the middle of the chain is skipped (via playOneVoiceClip's own
-// onDone-on-error behavior) rather than stalling the rest of the
-// sentence.
+// comment above VOICE_LINE_COUNTS for the motivating example.
+//
+// Deliberately does NOT chain off playOneVoiceClip's onDone/'ended'
+// callback the way an earlier version did — waiting for one clip's
+// playback to actually finish before even starting to load the next one
+// adds real JS-side latency on top of whatever's left after silence-
+// trimming (event dispatch, a promise microtask, another call stack) even
+// though it's individually small. Instead: load every clip in the
+// sequence up front, in parallel (Promise.all — a repeat sentence, which
+// is most of them since colors/phrases get reused constantly, resolves
+// this near-instantly off voiceBufferCache), then schedule them all
+// back-to-back directly on the Web Audio clock via source.start(when,
+// ...) — sample-accurate, no JS scheduling gap between clips at all.
+// VOICE_CLIP_OVERLAP additionally overlaps each clip's trailing
+// silence-padding with the next one's leading padding (see
+// VOICE_TRIM_PADDING — both are safely smaller than the padding kept on
+// each clip, so this only ever overlaps near-silent padding, never the
+// actual spoken word content) to tighten the sentence further. A
+// missing/broken clip just contributes nothing to the schedule — the
+// rest of the sentence still plays at the same total timing as if it
+// had never been in the list.
+//
+// Beyond this point there's no more "gap" left to remove — a long chain
+// (a big dollar amount can be 6+ number words alone) is now bounded by
+// the actual spoken length of that many words, not by software latency
+// (measured: a 6-clip number like "1,234" takes ~3.3s end to end with
+// zero scheduling gap, purely from the words themselves). The one
+// remaining lever that shortens real speech, not just gaps, is
+// VOICE_PLAYBACK_RATE below — a mild speedup applied to every clip in a
+// chained sequence (not single-clip playVoiceLine calls like "your
+// turn," which aren't the slow case). >1 plays faster and raises pitch
+// slightly (Web Audio's playbackRate is plain resampling, not
+// pitch-preserving time-stretch) — this needs a human ear to judge, not
+// something verifiable by reading code, so treat 1.15 as a starting
+// guess: raise it further if it still sounds too slow and doesn't yet
+// sound off, or lower it toward 1.0 if it starts sounding chipmunky.
+const VOICE_CLIP_OVERLAP = 0.03; // seconds of overlap scheduled between consecutive clips
+const VOICE_PLAYBACK_RATE = 1.15; // 1.0 = normal speed, unchanged from the recordings
+
 function playVoiceLineSequence(categories){
   if(voiceVolume <= 0 || !categories || categories.length === 0) return;
-  let i = 0;
-  function playNext(){
-    if(i >= categories.length) return;
-    playOneVoiceClip(categories[i++], playNext);
-  }
-  playNext();
+  const ctx = getVoiceAudioContext();
+  if(ctx.state === 'suspended') ctx.resume().catch(()=>{});
+  Promise.all(categories.map(category=>{
+    const count = VOICE_LINE_COUNTS[category] || 1;
+    const n = 1 + Math.floor(Math.random() * count);
+    return loadTrimmedVoiceBuffer(voiceClipPath(category, n)).catch(()=>null);
+  })).then(clips=>{
+    let when = ctx.currentTime;
+    clips.forEach(clip=>{
+      if(!clip) return; // missing/broken — skipped, doesn't shift the rest of the schedule
+      const source = ctx.createBufferSource();
+      source.buffer = clip.buffer;
+      source.playbackRate.value = VOICE_PLAYBACK_RATE;
+      const gain = ctx.createGain();
+      gain.gain.value = voiceVolume;
+      source.connect(gain).connect(ctx.destination);
+      source.start(when, clip.start, clip.duration);
+      // start()/duration are in the buffer's own native time, unaffected
+      // by playbackRate — the actual wall-clock playback time is
+      // duration/playbackRate, so the schedule has to account for that
+      // directly rather than assuming 1x speed.
+      const wallClockDuration = clip.duration / VOICE_PLAYBACK_RATE;
+      when += Math.max(0.05, wallClockDuration - VOICE_CLIP_OVERLAP);
+    });
+  });
 }
 
 // ============================================================
